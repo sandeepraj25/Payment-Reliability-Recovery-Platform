@@ -5,6 +5,7 @@ payguard:
     admin-password: test-admin-password
     gateway-client-id: merchant_client
     gateway-client-secret: test-gateway-secret
+    viewer-password: test-viewer-password
   simulator:
     enabled: true
     webhook-secret: test-webhook-secret-0123456789
@@ -26,6 +27,9 @@ payguard:
     max-delay: PT1S
   faults:
     enabled: true
+  rate-limit:
+    webhooks-per-second: 1000000   # concurrency tests fire 1,000 requests from one IP
+    api-per-second: 1000000
   reconciliation:
     scheduled: false            # tests trigger runs explicitly
     settlement-expected-within: PT5S

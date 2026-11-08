@@ -67,7 +67,8 @@ public class PaymentEventListener {
     public void onMessage(Message message, Channel channel) throws IOException {
         long tag = message.getMessageProperties().getDeliveryTag();
         boolean redelivered = Boolean.TRUE.equals(message.getMessageProperties().getRedelivered());
-        Long webhookEventId = parseEventId(message.getBody());
+        JsonNode payload = parse(message.getBody());
+        Long webhookEventId = payload == null ? null : eventId(payload);
         if (webhookEventId == null) {
             // Poison message: retrying cannot help. requeue=false -> broker routes it to the DLQ.
             log.error("unparseable message rejected to DLQ messageId={}", message.getMessageProperties().getMessageId());
@@ -77,6 +78,9 @@ public class PaymentEventListener {
 
         Instant started = clock.instant();
         MDC.put("webhookEventId", webhookEventId.toString());
+        putMdc("correlationId", payload.path("correlationId"));
+        putMdc("providerEventId", payload.path("providerEventId"));
+        putMdc("gatewayPaymentId", payload.path("gatewayPaymentId"));
         Timer.Sample sample = Timer.start(meters);
         String outcome = "unknown";
         try {
@@ -100,6 +104,9 @@ public class PaymentEventListener {
             sample.stop(Timer.builder("payguard.worker.processing").tag("outcome", outcome)
                     .description("time to process one payment event message").register(meters));
             MDC.remove("webhookEventId");
+            MDC.remove("correlationId");
+            MDC.remove("providerEventId");
+            MDC.remove("gatewayPaymentId");
         }
     }
 
@@ -125,13 +132,22 @@ public class PaymentEventListener {
         }
     }
 
-    private Long parseEventId(byte[] body) {
+    private JsonNode parse(byte[] body) {
         try {
-            JsonNode node = objectMapper.readTree(body);
-            JsonNode id = node == null ? null : node.get("webhookEventId");
-            return id != null && id.canConvertToLong() && id.isIntegralNumber() ? id.asLong() : null;
+            return objectMapper.readTree(body);
         } catch (IOException e) {
             return null;
+        }
+    }
+
+    private static Long eventId(JsonNode node) {
+        JsonNode id = node.get("webhookEventId");
+        return id != null && id.isIntegralNumber() && id.canConvertToLong() ? id.asLong() : null;
+    }
+
+    private static void putMdc(String key, JsonNode value) {
+        if (value != null && value.isTextual()) {
+            MDC.put(key, value.asText());
         }
     }
 

@@ -52,10 +52,13 @@ public class WebhookIngestionService {
     private final Clock clock;
     private final OutboxStore outbox;
     private final FaultInjector faults;
+    private final io.micrometer.core.instrument.MeterRegistry meters;
 
     public WebhookIngestionService(List<WebhookVerifier> verifiers, WebhookPayloadParser parser,
                                    WebhookEventStore store, WebhookProperties props,
-                                   TransactionTemplate tx, Clock clock, OutboxStore outbox, FaultInjector faults) {
+                                   TransactionTemplate tx, Clock clock, OutboxStore outbox, FaultInjector faults,
+                                   io.micrometer.core.instrument.MeterRegistry meters) {
+        this.meters = meters;
         this.outbox = outbox;
         this.faults = faults;
         this.verifiers = verifiers.stream().collect(Collectors.toUnmodifiableMap(WebhookVerifier::provider, Function.identity()));
@@ -147,11 +150,14 @@ public class WebhookIngestionService {
                         provider, event.eventId(), stored.id());
             }
             log.info("webhook duplicate provider={} eventId={} webhookEventId={}", provider, event.eventId(), stored.id());
+            meters.counter("payguard.webhooks", "provider", provider, "result", "DUPLICATE").increment();
             return new Accepted(Result.DUPLICATE, event.eventId(), stored.id());
         }
         log.info("webhook stored provider={} eventId={} type={} paymentId={} version={} webhookEventId={}",
                 provider, event.eventId(), event.type(), event.paymentId(), event.paymentVersion(), stored.id());
-        return new Accepted(event.known() ? Result.ACCEPTED : Result.IGNORED, event.eventId(), stored.id());
+        Result result = event.known() ? Result.ACCEPTED : Result.IGNORED;
+        meters.counter("payguard.webhooks", "provider", provider, "result", result.name()).increment();
+        return new Accepted(result, event.eventId(), stored.id());
     }
 
     private RejectedException reject(String provider, HttpHeaders headers, byte[] body, String sourceIp,
@@ -160,6 +166,7 @@ public class WebhookIngestionService {
         String excerpt = new String(body, 0, Math.min(body.length, REJECTION_EXCERPT_CHARS), StandardCharsets.UTF_8);
         store.insertRejection(provider, claimedId, reason, detail,
                 body.length == 0 ? null : Hashing.sha256Hex(body), excerpt, sourceIp);
+        meters.counter("payguard.webhooks", "provider", provider, "result", "REJECTED_" + reason.name()).increment();
         // Never log the signature header or the body: only the reason.
         log.warn("webhook rejected provider={} reason={} detail={} claimedEventId={} ip={}",
                 provider, reason, detail, claimedId, sourceIp);

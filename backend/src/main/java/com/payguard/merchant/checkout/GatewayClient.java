@@ -75,6 +75,11 @@ public class GatewayClient {
         }
     }
 
+    public GatewayPaymentStatus getPayment(String gatewayPaymentId) {
+        return get(environment.getRequiredProperty("payguard.gateway.base-url") + "/payments/{id}",
+                GatewayPaymentStatus.class, gatewayPaymentId);
+    }
+
     public java.util.List<SettlementBatch> settlementReportsSince(java.time.Instant since) {
         String baseUrl = environment.getRequiredProperty("payguard.gateway.base-url");
         SettlementBatch[] batches = get(baseUrl + "/settlements?since={since}", SettlementBatch[].class, since.toString());

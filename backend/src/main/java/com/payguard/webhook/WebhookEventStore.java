@@ -32,7 +32,8 @@ public class WebhookEventStore {
     public record EventRow(long id, String provider, String providerEventId, String eventType,
                            String gatewayPaymentId, Long gatewayPaymentVersion, OffsetDateTime providerCreatedAt,
                            String payload, String payloadSha256, String processingStatus, int duplicateCount,
-                           OffsetDateTime lastDuplicateAt, OffsetDateTime receivedAt, OffsetDateTime processedAt) {
+                           OffsetDateTime lastDuplicateAt, OffsetDateTime receivedAt, OffsetDateTime processedAt,
+                           int attemptCount, String processingResult, String lastError) {
     }
 
     public record RejectionRow(long id, String provider, String claimedEventId, String reason, String detail,
@@ -120,17 +121,25 @@ public class WebhookEventStore {
     private static final String EVENT_COLUMNS = """
             id, provider, provider_event_id, event_type, gateway_payment_id, gateway_payment_version,
             provider_created_at, payload::text AS payload, payload_sha256, processing_status, duplicate_count,
-            last_duplicate_at, received_at, processed_at
+            last_duplicate_at, received_at, processed_at, attempt_count, processing_result, last_error
             """;
 
     public List<EventRow> recentEvents(String gatewayPaymentId, int limit) {
+        return recentEvents(gatewayPaymentId, null, null, limit);
+    }
+
+    public List<EventRow> recentEvents(String gatewayPaymentId, String status, String providerEventId, int limit) {
         return jdbc.sql("SELECT " + EVENT_COLUMNS + """
                   FROM webhook_events
                  WHERE (CAST(:paymentId AS varchar) IS NULL OR gateway_payment_id = :paymentId)
+                   AND (CAST(:status AS varchar) IS NULL OR processing_status = :status)
+                   AND (CAST(:eventId AS varchar) IS NULL OR provider_event_id = :eventId)
                  ORDER BY received_at DESC, id DESC
                  LIMIT :limit
                 """)
                 .param("paymentId", gatewayPaymentId)
+                .param("status", status)
+                .param("eventId", providerEventId)
                 .param("limit", limit)
                 .query((rs, n) -> mapEvent(rs))
                 .list();
@@ -171,7 +180,10 @@ public class WebhookEventStore {
                 rs.getInt("duplicate_count"),
                 rs.getObject("last_duplicate_at", OffsetDateTime.class),
                 rs.getObject("received_at", OffsetDateTime.class),
-                rs.getObject("processed_at", OffsetDateTime.class));
+                rs.getObject("processed_at", OffsetDateTime.class),
+                rs.getInt("attempt_count"),
+                rs.getString("processing_result"),
+                rs.getString("last_error"));
     }
 
     private static String truncate(String s, int max) {

@@ -48,8 +48,10 @@ public class WebhookController {
 
     @GetMapping("/api/webhook-events")
     public List<WebhookEventStore.EventRow> events(@RequestParam(required = false) String gatewayPaymentId,
+                                                   @RequestParam(required = false) String status,
+                                                   @RequestParam(required = false) String eventId,
                                                    @RequestParam(defaultValue = "50") int limit) {
-        return store.recentEvents(gatewayPaymentId, clamp(limit));
+        return store.recentEvents(blankToNull(gatewayPaymentId), blankToNull(status), blankToNull(eventId), clamp(limit));
     }
 
     @GetMapping("/api/webhook-events/{id}")
@@ -60,6 +62,10 @@ public class WebhookController {
     @GetMapping("/api/webhook-rejections")
     public List<WebhookEventStore.RejectionRow> rejections(@RequestParam(defaultValue = "50") int limit) {
         return store.recentRejections(clamp(limit));
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
     }
 
     private static int clamp(int limit) {

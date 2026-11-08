@@ -53,11 +53,13 @@ server:
     include-stacktrace: never
     include-message: never
 
+# JSON logs: set LOGGING_STRUCTURED_FORMAT_CONSOLE=logstash (docker-compose does). MDC keys
+# (correlationId, webhookEventId, providerEventId, gatewayPaymentId) appear as JSON fields.
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: never
@@ -68,6 +70,14 @@ payguard:
     admin-password: ${PAYGUARD_ADMIN_PASSWORD}
     gateway-client-id: ${PAYGUARD_GATEWAY_CLIENT_ID:merchant_client}
     gateway-client-secret: ${PAYGUARD_GATEWAY_CLIENT_SECRET}
+    viewer-username: ${PAYGUARD_VIEWER_USER:viewer}
+    viewer-password: ${PAYGUARD_VIEWER_PASSWORD:}
+    cors-origins: ${PAYGUARD_CORS_ORIGINS:http://localhost:5173}
+
+  rate-limit:
+    enabled: ${PAYGUARD_RATE_LIMIT_ENABLED:true}
+    webhooks-per-second: 200     # per client IP, burst = 2x
+    api-per-second: 50
 
   # Merchant -> gateway API (the merchant backend calls the gateway over HTTP, like it would call Razorpay).
   gateway:

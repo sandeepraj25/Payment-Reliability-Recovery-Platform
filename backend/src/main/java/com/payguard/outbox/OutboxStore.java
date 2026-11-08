@@ -47,6 +47,8 @@ public class OutboxStore {
         payload.put("eventType", eventType);
         payload.put("gatewayPaymentId", gatewayPaymentId);
         payload.put("purpose", purpose.name());
+        // Carries the request's correlation id to the worker, so one id links webhook -> outbox -> worker logs.
+        payload.put("correlationId", org.slf4j.MDC.get("correlationId"));
         String json;
         try {
             json = objectMapper.writeValueAsString(payload);
