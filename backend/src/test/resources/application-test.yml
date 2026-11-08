@@ -1,0 +1,24 @@
+# Test-only values. These are NOT secrets: they only exist inside test runs.
+payguard:
+  security:
+    admin-username: admin
+    admin-password: test-admin-password
+    gateway-client-id: merchant_client
+    gateway-client-secret: test-gateway-secret
+  simulator:
+    enabled: true
+    webhook-secret: test-webhook-secret-0123456789
+  webhooks:
+    providers:
+      payguard-sim:
+        secrets:
+          - test-webhook-secret-0123456789
+        tolerance: PT5M
+  idempotency:
+    lease: PT30S
+    ttl: P1D
+
+server:
+  tomcat:
+    threads:
+      max: 200

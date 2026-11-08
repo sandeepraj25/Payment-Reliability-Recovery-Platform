@@ -1,0 +1,78 @@
+# =====================================================================
+# PayGuard configuration.
+# Secrets have NO defaults: the app refuses to start without them
+# (see SecurityProperties / WebhookProperties). Copy .env.example to .env.
+# =====================================================================
+spring:
+  application:
+    name: payguard
+  datasource:
+    url: ${PAYGUARD_DB_URL:jdbc:postgresql://localhost:5432/payguard}
+    username: ${PAYGUARD_DB_USER:payguard}
+    password: ${PAYGUARD_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${PAYGUARD_DB_POOL_SIZE:10}
+      connection-timeout: 30000
+  jpa:
+    open-in-view: false            # no lazy loading during JSON rendering; transactions end in the service layer
+    hibernate:
+      ddl-auto: validate           # Flyway owns the schema; Hibernate only checks that entities match it
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    schemas: public,gateway
+  jackson:
+    deserialization:
+      accept-float-as-int: false        # 4999.5 for a Long amount is a 400, never silently truncated
+      fail-on-null-for-primitives: true
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: ${PAYGUARD_PORT:8080}
+  error:
+    include-stacktrace: never
+    include-message: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+payguard:
+  security:
+    admin-username: ${PAYGUARD_ADMIN_USER:admin}
+    admin-password: ${PAYGUARD_ADMIN_PASSWORD}
+    gateway-client-id: ${PAYGUARD_GATEWAY_CLIENT_ID:merchant_client}
+    gateway-client-secret: ${PAYGUARD_GATEWAY_CLIENT_SECRET}
+
+  # Merchant -> gateway API (the merchant backend calls the gateway over HTTP, like it would call Razorpay).
+  gateway:
+    base-url: ${PAYGUARD_GATEWAY_BASE_URL:http://localhost:${local.server.port}/sim/gateway}
+    connect-timeout: PT2S
+    read-timeout: PT5S
+
+  # Gateway simulator. OFF by default (secure default); the "local" profile and docker-compose turn it on.
+  simulator:
+    enabled: ${PAYGUARD_SIMULATOR_ENABLED:false}
+    webhook-secret: ${PAYGUARD_WEBHOOK_SECRET:}
+    webhook-url: ${PAYGUARD_SIMULATOR_WEBHOOK_URL:http://localhost:${local.server.port}/api/webhooks/payguard-sim}
+
+  # Merchant webhook ingestion. One entry per provider; each can have several secrets (rotation).
+  webhooks:
+    max-body-bytes: 65536
+    providers:
+      payguard-sim:
+        secrets:
+          - ${PAYGUARD_WEBHOOK_SECRET}
+        tolerance: PT5M
+
+  idempotency:
+    lease: PT30S
+    ttl: P1D
+    cleanup-interval: PT10M

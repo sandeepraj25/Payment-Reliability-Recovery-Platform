@@ -1,0 +1,32 @@
+# Local/demo stack. Usage:  cp .env.example .env  (edit values)  &&  docker compose up --build
+# Phase 2 adds RabbitMQ here; Phase 4 adds the frontend.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: payguard
+      POSTGRES_USER: ${PAYGUARD_DB_USER}
+      POSTGRES_PASSWORD: ${PAYGUARD_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"   # bound to localhost only
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PAYGUARD_DB_USER} -d payguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PAYGUARD_DB_URL: jdbc:postgresql://postgres:5432/payguard
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  pgdata:

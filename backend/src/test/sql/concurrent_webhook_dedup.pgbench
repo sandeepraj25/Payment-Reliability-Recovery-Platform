@@ -1,0 +1,22 @@
+-- pgbench script: many clients deliver the SAME webhook event at the same time.
+-- Mirrors WebhookEventStore exactly: statement 1 tries the insert, statement 2
+-- (a NEW statement => fresh READ COMMITTED snapshot) counts the duplicate.
+--
+-- Run (see docs/testing-results.md):
+--   pgbench -n -c 50 -j 8 -t 20 -f src/test/sql/concurrent_webhook_dedup.pgbench payguard
+BEGIN;
+WITH ins AS (
+    INSERT INTO webhook_events (provider, provider_event_id, event_type, gateway_payment_id,
+                                raw_body, payload, payload_sha256)
+    VALUES ('payguard-sim', 'evt_concurrency_1', 'payment.captured', 'pay_conc',
+            '{"id":"evt_concurrency_1"}', '{"id":"evt_concurrency_1"}', repeat('a', 64))
+    ON CONFLICT (provider, provider_event_id) DO NOTHING
+    RETURNING 1
+)
+SELECT count(*) AS inserted FROM ins \gset
+\if :inserted = 0
+UPDATE webhook_events
+   SET duplicate_count = duplicate_count + 1, last_duplicate_at = now()
+ WHERE provider = 'payguard-sim' AND provider_event_id = 'evt_concurrency_1';
+\endif
+COMMIT;
