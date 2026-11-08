@@ -20,4 +20,10 @@ public interface GatewayPaymentRepository extends JpaRepository<GatewayPayment, 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from GatewayPayment p where p.id = :id")
     Optional<GatewayPayment> findByIdForUpdate(@Param("id") String id);
+
+    /** Keyset pagination ("WHERE id > :afterId ORDER BY id"): stable and O(page) even for huge tables. */
+    @Query("select p from GatewayPayment p where p.updatedAt >= :since and p.id > :afterId order by p.id")
+    java.util.List<GatewayPayment> listUpdatedSince(@Param("since") java.time.Instant since,
+                                                    @Param("afterId") String afterId,
+                                                    org.springframework.data.domain.Pageable page);
 }

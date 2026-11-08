@@ -43,6 +43,59 @@ public class GatewayClient {
                                     long amountMinor, String currency, String status, long version) {
     }
 
+    /** Gateway's authoritative view, as returned by its status/list API. */
+    public record GatewayPaymentStatus(String id, String merchantOrderRef, long amountMinor, long amountRefundedMinor,
+                                       String currency, String status, long version, java.time.Instant capturedAt,
+                                       java.time.Instant updatedAt) {
+    }
+
+    public record SettlementItem(String paymentId, long grossMinor, long feeMinor, long netMinor, String currency) {
+    }
+
+    public record SettlementBatch(String id, java.time.Instant cutoff, java.time.Instant createdAt,
+                                  java.util.List<SettlementItem> items) {
+    }
+
+    /** All gateway payments changed since {@code since}, following keyset pagination to the end. */
+    public java.util.List<GatewayPaymentStatus> listPaymentsUpdatedSince(java.time.Instant since) {
+        String baseUrl = environment.getRequiredProperty("payguard.gateway.base-url");
+        java.util.List<GatewayPaymentStatus> all = new java.util.ArrayList<>();
+        String afterId = "";
+        while (true) {
+            GatewayPaymentStatus[] page = get(baseUrl + "/payments?updatedSince={since}&afterId={after}&limit=500",
+                    GatewayPaymentStatus[].class, since.toString(), afterId);
+            if (page == null || page.length == 0) {
+                return all;
+            }
+            all.addAll(java.util.List.of(page));
+            afterId = page[page.length - 1].id();
+            if (page.length < 500) {
+                return all;
+            }
+        }
+    }
+
+    public java.util.List<SettlementBatch> settlementReportsSince(java.time.Instant since) {
+        String baseUrl = environment.getRequiredProperty("payguard.gateway.base-url");
+        SettlementBatch[] batches = get(baseUrl + "/settlements?since={since}", SettlementBatch[].class, since.toString());
+        return batches == null ? java.util.List.of() : java.util.List.of(batches);
+    }
+
+    private <T> T get(String uriTemplate, Class<T> type, Object... vars) {
+        try {
+            return restClient.get()
+                    .uri(uriTemplate, vars)
+                    .headers(h -> h.setBasicAuth(clientId, clientSecret))
+                    .retrieve()
+                    .body(type);
+        } catch (ResourceAccessException e) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE", "Payment gateway did not respond");
+        } catch (RestClientResponseException e) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GATEWAY_ERROR",
+                    "Payment gateway returned HTTP " + e.getStatusCode().value());
+        }
+    }
+
     /**
      * Creates (or, for a repeated key, returns the existing) gateway payment.
      *

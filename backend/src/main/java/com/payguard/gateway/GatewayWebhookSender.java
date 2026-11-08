@@ -1,5 +1,7 @@
 package com.payguard.gateway;
 
+import com.payguard.faults.FaultInjector;
+import com.payguard.faults.FaultPoint;
 import com.payguard.common.error.ApiException;
 import com.payguard.webhook.signature.WebhookSignature;
 import org.slf4j.Logger;
@@ -43,9 +45,13 @@ public class GatewayWebhookSender {
     private final Clock clock;
     private final RestClient restClient;
     private final byte[] secret;
+    private final FaultInjector faults;
+    private final long delayMs;
 
     public GatewayWebhookSender(GatewayEventStore events, SimulatorProperties props, Environment environment,
-                                Clock clock, RestClient.Builder builder) {
+                                Clock clock, RestClient.Builder builder, FaultInjector faults) {
+        this.faults = faults;
+        this.delayMs = environment.getProperty("payguard.simulator.webhook-delay-ms", Long.class, 3000L);
         if (props.webhookSecret() == null || props.webhookSecret().length() < 16) {
             throw new IllegalStateException("payguard.simulator.webhook-secret must be at least 16 characters");
         }
@@ -66,6 +72,20 @@ public class GatewayWebhookSender {
     @Async("webhookExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onEventCreated(GatewayEventCreated created) {
+        if (faults.shouldFire(FaultPoint.GATEWAY_DROP_WEBHOOK)) {
+            // The state change is committed at the gateway, but the merchant never hears about it.
+            log.warn("FAULT gateway webhook DROPPED event={} - only reconciliation can detect this", created.eventId());
+            return;
+        }
+        if (faults.shouldFire(FaultPoint.GATEWAY_DELAY_WEBHOOK)) {
+            log.warn("FAULT gateway webhook DELAYED {} ms event={}", delayMs, created.eventId());
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
         deliver(created.eventId(), "AUTO");
     }
 

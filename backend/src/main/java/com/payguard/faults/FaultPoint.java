@@ -18,6 +18,10 @@ public enum FaultPoint {
     OUTBOX_BROKER_UNAVAILABLE,
     /** Gateway commits a state change but never sends the webhook -> only reconciliation can find it. */
     GATEWAY_DROP_WEBHOOK,
+    /** Gateway delivers the webhook only after a delay (seconds later) -> lets a newer event overtake it. */
+    GATEWAY_DELAY_WEBHOOK,
+    /** Gateway leaves one captured payment out of the next settlement batch -> MISSING_SETTLEMENT. */
+    GATEWAY_SETTLEMENT_OMIT,
     /** Gateway API call from the merchant times out (ambiguous outcome). */
     GATEWAY_API_TIMEOUT,
     /** Webhook ingestion fails before commit, as if the database were down -> 503, gateway must retry. */

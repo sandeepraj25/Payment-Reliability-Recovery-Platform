@@ -1,5 +1,8 @@
 package com.payguard.gateway;
 
+import com.payguard.faults.FaultInjector;
+import com.payguard.faults.FaultPoint;
+import org.springframework.web.bind.annotation.RequestParam;
 import com.payguard.domain.payment.PaymentStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -37,10 +40,22 @@ public class GatewayController {
     private final GatewayEventStore events;
     private final GatewayWebhookSender sender;
 
-    public GatewayController(GatewayPaymentService service, GatewayEventStore events, GatewayWebhookSender sender) {
+    private final GatewayPaymentRepository payments;
+    private final GatewaySettlementService settlements;
+    private final FaultInjector faults;
+    private final long timeoutSleepMs;
+
+    public GatewayController(GatewayPaymentService service, GatewayEventStore events, GatewayWebhookSender sender,
+                             GatewayPaymentRepository payments, GatewaySettlementService settlements,
+                             FaultInjector faults,
+                             @org.springframework.beans.factory.annotation.Value("${payguard.simulator.timeout-sleep-ms:6000}") long timeoutSleepMs) {
         this.service = service;
         this.events = events;
         this.sender = sender;
+        this.payments = payments;
+        this.settlements = settlements;
+        this.faults = faults;
+        this.timeoutSleepMs = timeoutSleepMs;
     }
 
     // ---------- DTOs ----------
@@ -59,11 +74,11 @@ public class GatewayController {
 
     public record PaymentView(String id, String gatewayReference, String merchantOrderRef, long amountMinor,
                               long amountRefundedMinor, String currency, PaymentStatus status,
-                              String failureReason, long version, Instant createdAt, Instant updatedAt) {
+                              String failureReason, long version, Instant capturedAt, Instant createdAt, Instant updatedAt) {
         static PaymentView of(GatewayPayment p) {
             return new PaymentView(p.getId(), p.getGatewayReference(), p.getMerchantOrderRef(), p.getAmountMinor(),
                     p.getAmountRefundedMinor(), p.getCurrency(), p.getStatus(), p.getFailureReason(),
-                    p.getVersion(), p.getCreatedAt(), p.getUpdatedAt());
+                    p.getVersion(), p.getCapturedAt(), p.getCreatedAt(), p.getUpdatedAt());
         }
     }
 
@@ -84,9 +99,46 @@ public class GatewayController {
             // Its transaction has committed, so a fresh attempt finds and returns that row.
             result = service.create(idempotencyKey, request.merchantOrderRef(), request.amountMinor(), request.currency());
         }
+        if (!result.replayed() && faults.shouldFire(FaultPoint.GATEWAY_API_TIMEOUT)) {
+            // The payment IS created and committed, but the answer arrives after the merchant's read timeout.
+            // From the merchant's side the outcome is ambiguous: "did it work or not?"
+            sleepQuietly(timeoutSleepMs);
+        }
         return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
                 .header("Idempotent-Replayed", Boolean.toString(result.replayed()))
                 .body(PaymentView.of(result.payment()));
+    }
+
+    /** Status API used by reconciliation: keyset-paginated list of payments changed since a time. */
+    @GetMapping("/payments")
+    public List<PaymentView> list(@RequestParam Instant updatedSince,
+                                  @RequestParam(defaultValue = "") String afterId,
+                                  @RequestParam(defaultValue = "200") int limit) {
+        return payments.listUpdatedSince(updatedSince, afterId,
+                        org.springframework.data.domain.PageRequest.of(0, Math.max(1, Math.min(limit, 500))))
+                .stream().map(PaymentView::of).toList();
+    }
+
+    public record SettlementRunRequest(Instant cutoff) {
+    }
+
+    /** Produces a settlement batch (normally the gateway does this daily, T+1/T+2). */
+    @PostMapping("/settlements/run")
+    public GatewaySettlementService.Batch runSettlement(@RequestBody(required = false) SettlementRunRequest request) {
+        return settlements.run(request == null || request.cutoff() == null ? Instant.now() : request.cutoff());
+    }
+
+    @GetMapping("/settlements")
+    public List<GatewaySettlementService.Batch> settlementReports(@RequestParam Instant since) {
+        return settlements.batchesSince(since);
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @GetMapping("/payments/{paymentId}")

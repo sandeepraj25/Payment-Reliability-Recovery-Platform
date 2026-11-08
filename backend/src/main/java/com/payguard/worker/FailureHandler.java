@@ -58,7 +58,10 @@ public class FailureHandler {
         }
         ProcessingStore.LockedEvent e = locked.get();
         if (!e.status().equals("RECEIVED") && !e.status().equals("RETRY_SCHEDULED")) {
-            return Decision.NOTHING_TO_DO; // someone else finished or dead-lettered it meanwhile
+            // Already PROCESSED / DEAD: the business outcome is settled, so retrying is pointless - but an
+            // error on this path is still a bug worth seeing (this is how a too-short column was found).
+            log.error("error while handling already-{} event {} (no retry): {}", e.status(), webhookEventId, error.toString());
+            return Decision.NOTHING_TO_DO;
         }
 
         FailureClassifier.Kind kind = classifier.classify(error);

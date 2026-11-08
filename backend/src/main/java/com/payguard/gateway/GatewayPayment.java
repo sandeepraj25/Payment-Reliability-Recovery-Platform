@@ -55,6 +55,9 @@ public class GatewayPayment {
     @Column(nullable = false)
     private Long version; // wrapper type: null => "new entity" => persist() rather than merge()
 
+    @Column(name = "captured_at")
+    private Instant capturedAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -83,6 +86,9 @@ public class GatewayPayment {
 
     /** Only the service calls this, after the state machine approved the transition. */
     void moveTo(PaymentStatus next, Instant now) {
+        if (next == PaymentStatus.CAPTURED && capturedAt == null) {
+            this.capturedAt = now;
+        }
         this.status = next;
         this.updatedAt = now;
     }
@@ -111,6 +117,7 @@ public class GatewayPayment {
     public String getFailureReason() { return failureReason; }
     public String getCreateRequestFingerprint() { return createRequestFingerprint; }
     public long getVersion() { return version == null ? 0 : version; }
+    public Instant getCapturedAt() { return capturedAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

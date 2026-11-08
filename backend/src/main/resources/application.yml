@@ -29,6 +29,8 @@ spring:
     port: ${PAYGUARD_RABBIT_PORT:5672}
     username: ${PAYGUARD_RABBIT_USER:payguard}
     password: ${PAYGUARD_RABBIT_PASSWORD}
+    connection-timeout: 5s
+    channel-rpc-timeout: 10s            # default is 10 MINUTES: a frozen broker would hang the publisher
     publisher-confirm-type: simple      # outbox publisher blocks on waitForConfirmsOrDie
     publisher-returns: true
     template:
