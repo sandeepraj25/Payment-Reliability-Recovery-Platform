@@ -48,6 +48,7 @@ services:
       PAYGUARD_DB_URL: jdbc:postgresql://postgres:5432/payguard
       PAYGUARD_RABBIT_HOST: rabbitmq
       PAYGUARD_WORKER_ENABLED: "false"
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: logstash
     ports:
       - "127.0.0.1:8080:8080"
 
@@ -66,6 +67,8 @@ services:
       PAYGUARD_SIMULATOR_ENABLED: "false"
       SPRING_MAIN_WEB_APPLICATION_TYPE: none
       SPRING_FLYWAY_ENABLED: "false"
+      PAYGUARD_RECON_SCHEDULED: "false"          # reconciliation runs in the API process
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: logstash
     deploy:
       replicas: 2                               # two worker processes compete on one queue
 

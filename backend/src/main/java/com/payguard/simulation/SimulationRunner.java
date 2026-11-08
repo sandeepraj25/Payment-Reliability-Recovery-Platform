@@ -15,7 +15,6 @@ import com.payguard.reconciliation.ReconciliationStore;
 import com.payguard.webhook.signature.WebhookSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -46,7 +45,8 @@ import java.util.function.BooleanSupplier;
  * <p>Only exists when both the gateway simulator and fault injection are enabled (local/demo).
  */
 @Service
-@ConditionalOnProperty(prefix = "payguard.faults", name = "enabled", havingValue = "true")
+// Needs BOTH: fault injection (demo) and the gateway simulator in this process (the API process, not the worker).
+@org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("${payguard.faults.enabled:false} and ${payguard.simulator.enabled:false}")
 public class SimulationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SimulationRunner.class);

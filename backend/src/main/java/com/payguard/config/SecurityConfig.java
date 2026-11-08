@@ -38,6 +38,8 @@ import java.util.List;
  * never with an ambient cookie - CSRF needs a cookie the browser attaches automatically.
  */
 @Configuration
+// The worker process runs without a web server (spring.main.web-application-type=none): no HTTP, no security chain.
+@org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication
 public class SecurityConfig {
 
     @Bean

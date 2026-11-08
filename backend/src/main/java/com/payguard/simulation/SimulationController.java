@@ -5,7 +5,6 @@ import com.payguard.faults.FaultInjector;
 import com.payguard.faults.FaultPoint;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -24,7 +23,8 @@ import java.util.Map;
  * so in production these URLs do not exist at all (404), rather than being "protected".
  */
 @RestController
-@ConditionalOnProperty(prefix = "payguard.faults", name = "enabled", havingValue = "true")
+// Needs BOTH: fault injection (demo) and the gateway simulator in this process (the API process, not the worker).
+@org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("${payguard.faults.enabled:false} and ${payguard.simulator.enabled:false}")
 public class SimulationController {
 
     private final SimulationRunner runner;

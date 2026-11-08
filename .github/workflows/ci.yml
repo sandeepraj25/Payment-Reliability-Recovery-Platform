@@ -126,11 +126,19 @@ jobs:
           cache: maven
       - name: Build backend jar
         run: mvn -B -q -f backend/pom.xml package -DskipTests
-      - name: Start backend
+      # Same topology as docker-compose: an API process (no worker) + a SEPARATE headless worker process.
+      - name: Start API process
         run: |
-          nohup java -jar backend/target/payguard-backend-0.1.0-SNAPSHOT.jar > backend.log 2>&1 &
+          PAYGUARD_WORKER_ENABLED=false nohup java -jar backend/target/payguard-backend-0.1.0-SNAPSHOT.jar > backend.log 2>&1 &
           for i in $(seq 1 90); do curl -sf localhost:8080/actuator/health && exit 0; sleep 2; done
           tail -100 backend.log; exit 1
+      - name: Start worker process
+        run: |
+          PAYGUARD_WORKER_ENABLED=true PAYGUARD_OUTBOX_PUBLISHER_ENABLED=false PAYGUARD_SIMULATOR_ENABLED=false \
+          SPRING_MAIN_WEB_APPLICATION_TYPE=none SPRING_FLYWAY_ENABLED=false \
+            nohup java -jar backend/target/payguard-backend-0.1.0-SNAPSHOT.jar > worker.log 2>&1 &
+          for i in $(seq 1 60); do grep -q 'Started PayGuardApplication' worker.log && exit 0; sleep 2; done
+          tail -100 worker.log; exit 1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -156,9 +164,11 @@ jobs:
             [ -f "$f" ] || continue
             echo "=====SHOT $(basename "$f")"; base64 -w 3000 "$f"; echo "=====END"
           done
-      - name: Backend log sample (structured JSON with correlation ids)
+      - name: Log samples (structured JSON with correlation ids, from both processes)
         if: always()
-        run: grep -m 5 '"correlationId"' backend.log || tail -50 backend.log
+        run: |
+          echo "--- API"; grep -m 3 '"correlationId"' backend.log || tail -40 backend.log
+          echo "--- WORKER"; grep -m 3 '"correlationId"' worker.log || tail -40 worker.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -167,3 +177,4 @@ jobs:
             frontend/e2e-screens
             frontend/test-results
             backend.log
+            worker.log
