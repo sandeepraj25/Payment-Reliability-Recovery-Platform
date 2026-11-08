@@ -44,6 +44,9 @@ import static org.awaitility.Awaitility.await;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
+// Spring Boot disables metrics export in tests by default; we test the Prometheus endpoint, so opt in.
+// (On the base class, so every IT keeps sharing ONE cached application context.)
+@org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 public abstract class IntegrationTestBase {
 
     public static final String ADMIN_USER = "admin";

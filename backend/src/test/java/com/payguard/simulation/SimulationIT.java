@@ -32,7 +32,8 @@ class SimulationIT extends IntegrationTestBase {
         assertThat(status).as("scenario %s: invariants=%s error=%s steps=%s", scenario, invariants,
                 run.path("error"), run.path("steps")).isEqualTo("PASSED");
         assertThat((String) run.path("steps")).contains("\"INJECT\"");
-        assertThat(invariants).contains("\"held\":true").doesNotContain("\"held\":false");
+        // JSONB renders `"held": true` (with a space) - match the JSON value, not a formatting.
+        assertThat(invariants).containsPattern("\"held\":\\s*true").doesNotContainPattern("\"held\":\\s*false");
     }
 
     @Test

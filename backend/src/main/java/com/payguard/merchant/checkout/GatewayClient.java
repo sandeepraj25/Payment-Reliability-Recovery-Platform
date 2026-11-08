@@ -98,6 +98,8 @@ public class GatewayClient {
         } catch (RestClientResponseException e) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "GATEWAY_ERROR",
                     "Payment gateway returned HTTP " + e.getStatusCode().value());
+        } catch (org.springframework.web.client.RestClientException e) {
+            throw ambiguousOrBroken(e);
         }
     }
 
@@ -125,6 +127,23 @@ public class GatewayClient {
         } catch (RestClientResponseException e) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "GATEWAY_ERROR",
                     "Payment gateway returned HTTP " + e.getStatusCode().value());
+        } catch (org.springframework.web.client.RestClientException e) {
+            throw ambiguousOrBroken(e);
         }
+    }
+
+    /**
+     * Found by the GATEWAY_API_TIMEOUT simulation: a read timeout can fire while the response body is being
+     * extracted, and then Spring wraps the SocketTimeoutException in a plain RestClientException instead of
+     * ResourceAccessException. Any I/O failure means "outcome unknown" -> 503, retry with the same key.
+     */
+    private static ApiException ambiguousOrBroken(org.springframework.web.client.RestClientException e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof java.io.IOException) {
+                return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE",
+                        "Payment gateway did not respond in time; retry with the same Idempotency-Key");
+            }
+        }
+        return new ApiException(HttpStatus.BAD_GATEWAY, "GATEWAY_ERROR", "Unexpected response from payment gateway");
     }
 }

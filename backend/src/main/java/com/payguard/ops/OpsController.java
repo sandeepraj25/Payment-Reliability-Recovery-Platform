@@ -35,9 +35,12 @@ public class OpsController {
     private final GatewayClient gateway;
     private final AuditLog audit;
     private final Clock clock;
+    private final com.payguard.faults.FaultInjector faults;
 
     public OpsController(JdbcClient jdbc, OutboxStore outbox, DeadLetterService deadLetters,
-                         ReconciliationStore reconciliation, GatewayClient gateway, AuditLog audit, Clock clock) {
+                         ReconciliationStore reconciliation, GatewayClient gateway, AuditLog audit, Clock clock,
+                         com.payguard.faults.FaultInjector faults) {
+        this.faults = faults;
         this.jdbc = jdbc;
         this.outbox = outbox;
         this.deadLetters = deadLetters;
@@ -245,6 +248,16 @@ public class OpsController {
         out.put("timeline", events);
         out.put("audit", audit.recent("payment", paymentId.toString(), 50));
         return out;
+    }
+
+    // ------------------------------------------------------------------ session
+
+    /** Used by the dashboard after login: who am I, what may I do, is the failure lab available here? */
+    @GetMapping("/api/me")
+    public Map<String, Object> me(org.springframework.security.core.Authentication auth) {
+        List<String> roles = auth.getAuthorities().stream()
+                .map(a -> a.getAuthority().replaceFirst("^ROLE_", "")).sorted().toList();
+        return Map.of("username", auth.getName(), "roles", roles, "faultsEnabled", faults.isEnabled());
     }
 
     // ------------------------------------------------------------------ audit

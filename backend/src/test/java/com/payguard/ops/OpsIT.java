@@ -32,7 +32,8 @@ class OpsIT extends IntegrationTestBase {
                 .body("database.up", equalTo(true))
                 .body("rabbitmq.up", equalTo(true))
                 .body("workers.size()", greaterThanOrEqualTo(1))
-                .body("processingLatencyMs.samples", greaterThanOrEqualTo(2));
+                // >= 1, not 2: if "captured" overtakes "authorized", the latter is SKIPPED_STALE (not a SUCCESS sample).
+                .body("processingLatencyMs.samples", greaterThanOrEqualTo(1));
 
         admin().get("/api/ops/timeseries").then().statusCode(200).body("size()", equalTo(60));
 
@@ -52,6 +53,8 @@ class OpsIT extends IntegrationTestBase {
     void viewerCanReadButNotChangeAnything() {
         var viewer = RestAssured.given().auth().preemptive().basic("viewer", "test-viewer-password").contentType("application/json");
         viewer.get("/api/ops/summary").then().statusCode(200);
+        RestAssured.given().auth().preemptive().basic("viewer", "test-viewer-password").get("/api/me").then().statusCode(200)
+                .body("username", equalTo("viewer")).body("roles", hasItem("VIEWER")).body("faultsEnabled", equalTo(true));
         RestAssured.given().auth().preemptive().basic("viewer", "test-viewer-password").contentType("application/json")
                 .post("/api/reconciliation/runs").then().statusCode(403);
         RestAssured.given().get("/api/ops/summary").then().statusCode(401);

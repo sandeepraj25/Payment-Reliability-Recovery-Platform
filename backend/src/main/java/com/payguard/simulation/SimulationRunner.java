@@ -278,7 +278,7 @@ public class SimulationRunner {
         gateway.capture(c.gatewayPaymentId);
         c.step("INJECT", "Publisher crashes after broker confirm, before marking PUBLISHED", "OUTBOX_CRASH_AFTER_CONFIRM", snapshot(c));
         waitFor(() -> "FULFILLED".equals(orderStatus(c)), "order fulfilled");
-        waitFor(() -> attemptsForPayment(c).contains("SKIPPED_ALREADY_PROCESSED"), "duplicate message skipped");
+        waitFor(() -> attemptsForPayment(c).stream().anyMatch(a -> a.contains("SKIPPED_ALREADY_PROCESSED")), "duplicate message skipped");
         c.step("OBSERVED", "The same message was published twice", "", Map.of("attempts", attemptsForPayment(c), "outbox", outbox(c)));
         c.step("RECOVERY", "Worker deduplicated the second copy", Scenario.OUTBOX_PUBLISHER_CRASH.mechanisms(), snapshot(c));
         finalChecks(c);
