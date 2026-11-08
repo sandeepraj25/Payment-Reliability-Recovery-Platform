@@ -91,16 +91,37 @@ class CheckoutIT extends IntegrationTestBase {
         List<String> successBodies = new ArrayList<>();
         for (Future<Response> f : futures) {
             Response r = f.get();
-            // 201 = winner or replay of the stored response; 409 = winner still in progress at that moment.
-            assertThat(r.statusCode()).isIn(201, 409);
+            // 201 = winner or replay of the stored response; 409 = winner still in progress at that moment;
+            // 503 GATEWAY_UNAVAILABLE = the winner's call to the gateway timed out (outcome unknown).
+            // That 503 is NOT a bug: on a busy CI machine 100 simultaneous requests (each paying a BCrypt
+            // check) can push the internal gateway call past its 2 s test read-timeout. The API contract says
+            // "retry with the same key", so the test does exactly that below. (This assertion used to allow
+            // only 201/409 and failed intermittently in CI run 42468105642.)
+            assertThat(r.statusCode()).isIn(201, 409, 503);
+            if (r.statusCode() == 503) {
+                assertThat(r.<String>path("code")).isEqualTo("GATEWAY_UNAVAILABLE");
+            }
             if (r.statusCode() == 201) {
                 successBodies.add(r.asString());
             }
         }
         pool.shutdown();
 
-        assertThat(successBodies).isNotEmpty();
-        assertThat(successBodies).allMatch(b -> b.equals(successBodies.get(0)));
+        // Behave like a real client: keep retrying with the SAME key until the request completes.
+        Response last = null;
+        for (int attempt = 0; attempt < 20; attempt++) {
+            last = checkout("checkout-key-conc1", BODY);
+            if (last.statusCode() == 201) {
+                break;
+            }
+            assertThat(last.statusCode()).isIn(409, 503);
+            Thread.sleep(250);
+        }
+        assertThat(last.statusCode()).as("request eventually completes").isEqualTo(201);
+        String finalBody = last.asString();
+
+        // The correctness guarantees, independent of timing: one stored response, one order, one charge.
+        assertThat(successBodies).allMatch(b -> b.equals(finalBody));
         assertThat(count("SELECT count(*) FROM orders")).isEqualTo(1);
         assertThat(count("SELECT count(*) FROM payments")).isEqualTo(1);
         assertThat(count("SELECT count(*) FROM gateway.gateway_payments")).isEqualTo(1);

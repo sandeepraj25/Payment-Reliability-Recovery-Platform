@@ -70,6 +70,15 @@ The job fails only when a correctness invariant breaks; no latency thresholds ex
 | 42467008972 | `d03e262` (docs only) | — | **load job red**, 4 other jobs green | Retry storm got 12 × `503` (documented "retry with the same key" signal). v1 counted any 5xx as failure and never retried, so the run failed although the business result was still correct (450 orders, 200 fulfilments). |
 | **42467595295** | **`57e688b`** | AMD EPYC 9V74 | **all 5 jobs green, 13/13 invariants** | Load generator v2: identical bodies for duplicates; checkout client retries 409/503 with the same key and backoff (honouring `Retry-After`), as the API contract says. Stricter invariant: every request must *end* in 201, same orderId per key; any 500/502/transport error fails. |
 
+**A flaky test found afterwards (kept for honesty).** Every commit on the branch ran CI twice (on `push`, and again
+as a `pull_request` run). For `39a09ec` the pull-request run (42468108559) was green, but the push run of the **same
+code** (42468105642) failed: `CheckoutIT.hundredConcurrentRetriesCreateOneOrder` received a `503 GATEWAY_UNAVAILABLE`
+where it allowed only 201/409. Cause: 100 simultaneous requests, each paying a BCrypt check, pushed the winning
+request's internal gateway call past the 2 s test read-timeout. The system behaved as documented ("retry with the
+same key"); the test assumed a fast machine. Fixed on branch `fix-flaky-concurrent-checkout-test`: the test now accepts
+the documented 503, retries with the same key like a real client, then asserts exactly 1 order, 1 payment, 1 gateway
+payment and one identical stored response. Merged `main` (`4b7096f`, run 42469459052) was green on all 5 jobs.
+
 Run 42467595295 also re-ran the full suite: **155 unit + 80 integration tests, 0 failures**; Playwright **6/6**.
 
 ### Correctness under load — run 42467595295, 13/13 invariants passed

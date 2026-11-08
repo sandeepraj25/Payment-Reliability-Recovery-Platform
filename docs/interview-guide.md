@@ -315,6 +315,7 @@ evidence per step; `SimulationIT` requires all 12 to end PASSED.
 | Gateway read-timeout surfaced as a plain `RestClientException` | simulation `GATEWAY_API_TIMEOUT` errored instead of returning 503 | Timeouts can surface during body extraction; classify by cause (`IOException`), not by exception class. |
 | Tomcat accept queue (100) overflowed on 1,000 simultaneous connections | "header parser received no bytes" in the client | Load generator ≠ system bug; size `accept-count`, and make the client retry transport errors *like a real gateway*, reporting the count. |
 | Same-version duplicate in a batch of shuffled events | (anticipated) | Versions alone don't stop two *different* events meaning "paid" — `UNIQUE(order_id)` on fulfilments is the last line. |
+| 100 same-key checkouts: one got `503 GATEWAY_UNAVAILABLE` | intermittent CI failure (push run red, PR run of the same commit green) | Not a product bug: the 2 s test read-timeout fired under CPU contention. A concurrency test must assert **correctness** (one order, one charge), not **timing**; it now retries per the API contract. Lesson: one green run doesn't prove a concurrent test is stable. |
 | Worker-only process would not start | found in review: security config needs a web app; simulation beans need the simulator | Conditional beans per process role; CI now runs the API and a separate worker. |
 
 ---
