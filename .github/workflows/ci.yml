@@ -63,3 +63,107 @@ jobs:
           dups=$(psql -tAc "SELECT duplicate_count FROM webhook_events WHERE provider_event_id='evt_concurrency_1'")
           echo "rows=$rows duplicate_count=$dups"
           test "$rows" = "1" && test "$dups" = "999"
+
+  # Frontend: type-check + production build.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
+  # End-to-end: the REAL backend jar + PostgreSQL + RabbitMQ + the built dashboard, driven by Playwright.
+  e2e:
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: payguard
+          POSTGRES_USER: payguard
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payguard" --health-interval 5s --health-timeout 3s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: payguard
+          RABBITMQ_DEFAULT_PASS: ci-only-password
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 20
+    env:
+      PAYGUARD_DB_URL: jdbc:postgresql://localhost:5432/payguard
+      PAYGUARD_DB_USER: payguard
+      PAYGUARD_DB_PASSWORD: ci-only-password
+      PAYGUARD_RABBIT_HOST: localhost
+      PAYGUARD_RABBIT_USER: payguard
+      PAYGUARD_RABBIT_PASSWORD: ci-only-password
+      PAYGUARD_ADMIN_PASSWORD: ci-admin-password
+      PAYGUARD_GATEWAY_CLIENT_SECRET: ci-gateway-secret
+      PAYGUARD_WEBHOOK_SECRET: ci-webhook-secret-0123456789
+      PAYGUARD_SIMULATOR_ENABLED: "true"
+      PAYGUARD_FAULTS_ENABLED: "true"
+      PAYGUARD_RECON_SCHEDULED: "false"
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: logstash
+      PAYGUARD_E2E_PASSWORD: ci-admin-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build backend jar
+        run: mvn -B -q -f backend/pom.xml package -DskipTests
+      - name: Start backend
+        run: |
+          nohup java -jar backend/target/payguard-backend-0.1.0-SNAPSHOT.jar > backend.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf localhost:8080/actuator/health && exit 0; sleep 2; done
+          tail -100 backend.log; exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build and serve dashboard
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          nohup npx vite preview --port 5173 > preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:5173 >/dev/null && exit 0; sleep 1; done; exit 1
+      - name: Playwright
+        working-directory: frontend
+        run: |
+          mkdir -p e2e-screens
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Print screenshots (base64, for reviewers without artifact access)
+        if: always()
+        run: |
+          for f in frontend/e2e-screens/*.png; do
+            [ -f "$f" ] || continue
+            echo "=====SHOT $(basename "$f")"; base64 -w 3000 "$f"; echo "=====END"
+          done
+      - name: Backend log sample (structured JSON with correlation ids)
+        if: always()
+        run: grep -m 5 '"correlationId"' backend.log || tail -50 backend.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e
+          path: |
+            frontend/e2e-screens
+            frontend/test-results
+            backend.log
