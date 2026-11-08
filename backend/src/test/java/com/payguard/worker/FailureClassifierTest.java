@@ -46,8 +46,9 @@ class FailureClassifierTest {
     }
 
     @Test
-    void subclassOfATransientTypeCanStillBePermanent() {
-        // NonTransientDataAccessResourceException EXTENDS DataAccessResourceFailureException.
+    void resourceFailureIsTransientButItsNonTransientParentIsPermanent() {
+        // DataAccessResourceFailureException EXTENDS NonTransientDataAccessResourceException:
+        // the subclass ("DB unreachable") is retried, the parent (e.g. misconfiguration) is not.
         assertThat(classifier.classify(new NonTransientDataAccessResourceException("bad config"))).isEqualTo(PERMANENT);
     }
 

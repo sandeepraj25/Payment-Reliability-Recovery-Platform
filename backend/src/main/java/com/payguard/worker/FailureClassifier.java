@@ -35,14 +35,20 @@ public class FailureClassifier {
             if (t instanceof ProcessingException.Transient) return Kind.TRANSIENT;
         }
         for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            // Checked first: it is a SUBCLASS of DataAccessResourceFailureException (listed as transient below).
+            // Spring's hierarchy: DataAccessResourceFailureException EXTENDS NonTransientDataAccessResourceException.
+            // Spring calls "cannot reach the database" non-transient, but for a worker it is the classic
+            // retry-later case. So the specific subclass is checked first (-> TRANSIENT), and only other
+            // NonTransientDataAccessResourceExceptions (e.g. bad configuration) are PERMANENT.
+            // (A unit test caught the first version of this getting the hierarchy backwards.)
+            if (t instanceof DataAccessResourceFailureException) {
+                return Kind.TRANSIENT;
+            }
             if (t instanceof NonTransientDataAccessResourceException) {
                 return Kind.PERMANENT;
             }
             if (t instanceof TransientDataAccessException
                     || t instanceof RecoverableDataAccessException
                     || t instanceof CannotCreateTransactionException
-                    || t instanceof DataAccessResourceFailureException
                     || t instanceof PessimisticLockingFailureException
                     || t instanceof OptimisticLockingFailureException
                     || t instanceof SQLTransientException
