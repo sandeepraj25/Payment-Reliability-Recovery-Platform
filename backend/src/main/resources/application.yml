@@ -109,6 +109,16 @@ payguard:
   faults:
     enabled: ${PAYGUARD_FAULTS_ENABLED:false}
 
+  # Reconciliation (Module G): merchant DB vs gateway vs settlement reports.
+  reconciliation:
+    scheduled: ${PAYGUARD_RECON_SCHEDULED:true}
+    interval: ${PAYGUARD_RECON_INTERVAL:PT5M}
+    initial-delay: PT1M
+    lookback: P7D
+    settlement-expected-within: PT48H
+    duplicate-threshold: 3
+    stale-run-after: PT30M
+
   idempotency:
     lease: PT30S
     ttl: P1D

@@ -8,6 +8,8 @@ payguard:
   simulator:
     enabled: true
     webhook-secret: test-webhook-secret-0123456789
+    timeout-sleep-ms: 3000
+    webhook-delay-ms: 1500
   webhooks:
     providers:
       payguard-sim:
@@ -24,6 +26,11 @@ payguard:
     max-delay: PT1S
   faults:
     enabled: true
+  reconciliation:
+    scheduled: false            # tests trigger runs explicitly
+    settlement-expected-within: PT5S
+  gateway:
+    read-timeout: PT2S
   idempotency:
     lease: PT30S
     ttl: P1D
@@ -32,6 +39,8 @@ server:
   tomcat:
     threads:
       max: 200
+    accept-count: 1000          # 1,000-connection bursts in concurrency tests
+    max-connections: 10000
 
 spring:
   datasource:

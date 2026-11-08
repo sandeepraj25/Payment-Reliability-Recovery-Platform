@@ -98,23 +98,9 @@ class WorkerIT extends IntegrationTestBase {
     void thousandConcurrentDuplicateWebhooksProduceOneFulfilment() throws Exception {
         CheckoutResult c = checkout("worker-key-0004", AMOUNT);
         String body = eventJson("evt_k_dup", "payment.captured", c.gatewayPaymentId(), 2, AMOUNT, "CAPTURED", 0);
-        String signature = sign(body);
-
-        var pool = Executors.newFixedThreadPool(64);
-        HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).executor(pool).build();
-        HttpRequest req = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/webhooks/payguard-sim"))
-                .timeout(Duration.ofSeconds(60)).header("Content-Type", "application/json")
-                .header(WebhookSignature.SIGNATURE_HEADER, signature)
-                .POST(HttpRequest.BodyPublishers.ofString(body)).build();
-        List<CompletableFuture<HttpResponse<String>>> futures = new ArrayList<>();
-        for (int i = 0; i < 1000; i++) {
-            futures.add(client.sendAsync(req, HttpResponse.BodyHandlers.ofString()));
-        }
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).get(120, TimeUnit.SECONDS);
-        pool.shutdown();
-        for (var f : futures) {
-            assertThat(f.get().statusCode()).isEqualTo(200);
-        }
+        BurstResult burst = deliverBurst(body, 1000);
+        assertThat(burst.statuses()).hasSize(1000).allMatch(st -> st == 200);
+        System.out.println("burst transport retries: " + burst.transportRetries());
 
         awaitOrderStatus(c.orderId(), "FULFILLED");
         Thread.sleep(1000);

@@ -134,7 +134,9 @@ public abstract class IntegrationTestBase {
         MessageListenerContainer worker = listenerRegistry.getListenerContainer("payment-event-worker");
         worker.stop();
         jdbc.sql("""
-                TRUNCATE processing_attempts, outbox_events, fulfilments, audit_logs, fault_injections,
+                TRUNCATE reconciliation_mismatches, reconciliation_runs, settlement_records, settlement_batches,
+                         gateway.settlement_items, gateway.settlement_batches,
+                         processing_attempts, outbox_events, fulfilments, audit_logs, fault_injections,
                          webhook_events, webhook_rejections, idempotency_records, payments, orders,
                          gateway.webhook_deliveries, gateway.gateway_events, gateway.gateway_refunds,
                          gateway.gateway_payments
@@ -180,6 +182,54 @@ public abstract class IntegrationTestBase {
         return RestAssured.given().contentType(ContentType.JSON).body(body.getBytes(StandardCharsets.UTF_8))
                 .header(WebhookSignature.SIGNATURE_HEADER, sign(body))
                 .post("/api/webhooks/payguard-sim").statusCode();
+    }
+
+    public record BurstResult(List<Integer> statuses, int transportRetries) {
+    }
+
+    /**
+     * Fires {@code n} copies of the same signed webhook at once (async HTTP, all in flight together).
+     * A request that fails at the TRANSPORT level (connection reset during the burst: no HTTP response
+     * at all) is retried, exactly like a real gateway would. HTTP error statuses are never retried.
+     */
+    protected BurstResult deliverBurst(String body, int n) throws Exception {
+        String signature = sign(body);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(64);
+        var client = java.net.http.HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(10)).executor(pool).build();
+        var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:" + port + "/api/webhooks/payguard-sim"))
+                .timeout(Duration.ofSeconds(60)).header("Content-Type", "application/json")
+                .header(WebhookSignature.SIGNATURE_HEADER, signature)
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body)).build();
+        var retries = new java.util.concurrent.atomic.AtomicInteger();
+        List<java.util.concurrent.CompletableFuture<Integer>> futures = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            futures.add(sendWithTransportRetry(client, request, 3, retries));
+        }
+        java.util.concurrent.CompletableFuture.allOf(futures.toArray(java.util.concurrent.CompletableFuture[]::new))
+                .get(180, java.util.concurrent.TimeUnit.SECONDS);
+        pool.shutdown();
+        List<Integer> statuses = new java.util.ArrayList<>();
+        for (var f : futures) statuses.add(f.get());
+        return new BurstResult(statuses, retries.get());
+    }
+
+    private static java.util.concurrent.CompletableFuture<Integer> sendWithTransportRetry(
+            java.net.http.HttpClient client, java.net.http.HttpRequest request, int retriesLeft,
+            java.util.concurrent.atomic.AtomicInteger retries) {
+        return client.sendAsync(request, java.net.http.HttpResponse.BodyHandlers.discarding())
+                .thenApply(java.net.http.HttpResponse::statusCode)
+                .handle((status, error) -> {
+                    if (error == null) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(status);
+                    }
+                    if (retriesLeft <= 0) {
+                        return java.util.concurrent.CompletableFuture.<Integer>failedFuture(error);
+                    }
+                    retries.incrementAndGet();
+                    return sendWithTransportRetry(client, request, retriesLeft - 1, retries);
+                })
+                .thenCompose(java.util.function.Function.identity());
     }
 
     protected String orderStatus(String orderId) {

@@ -84,7 +84,7 @@ public final class ReconciliationRules {
 
         paidGatewayPaymentsByOrder.forEach((orderId, paid) -> {
             if (paid.size() > 1) {
-                findings.add(new Finding(MismatchType.DOUBLE_CHARGE, null, null, orderId,
+                findings.add(new Finding(MismatchType.DOUBLE_CHARGE, paid.get(0), null, orderId,
                         paid.size() + " paid payments", String.join(",", paid),
                         Map.of("paidGatewayPayments", paid, "action", "refund all but one")));
             }
