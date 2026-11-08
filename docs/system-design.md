@@ -1,6 +1,6 @@
 # PayGuard — System Design
 
-> Status: Phase 1 implemented (see `PROJECT_PROGRESS.md` for what is verified and what is not).
+> Status: Phases 1–5 implemented; all automated tests green in CI (see `testing-results.md`).
 
 ## 1. The problem in one paragraph
 
@@ -104,10 +104,12 @@ CREATED ──► AUTHORIZED ──► CAPTURED ──► PARTIALLY_REFUNDED ─
 | I4 | Money is an integer number of minor units; fractions are rejected, never rounded | `BIGINT` + `CHECK > 0` + Jackson `accept-float-as-int=false` + parser checks | 1 ✔ |
 | I5 | One idempotency key ⇒ at most one order and one gateway payment | `UNIQUE (scope, key)` + deterministic gateway key | 1 ✔ |
 | I6 | Refunds never exceed the captured amount | row lock + `CHECK (refunded BETWEEN 0 AND amount)` | 1 ✔ |
-| I7 | No duplicate fulfilment for the same order | conditional update + `UNIQUE(order_id)` on fulfilments | 2 |
-| I8 | Committed events remain recoverable | transactional outbox | 2 |
-| I9 | Stale events cannot regress payment state | version comparison + state machine | 2–3 |
-| I10 | Reconciliation never silently overwrites ambiguous states | auto-fix allow-list, otherwise MANUAL_REVIEW | 3 |
+| I7 | No duplicate fulfilment for the same order | `UNIQUE(order_id)` on fulfilments + `ON CONFLICT DO NOTHING` | 2 ✔ |
+| I8 | Committed events remain recoverable | transactional outbox; outbox never gives up | 2 ✔ |
+| I9 | Stale events cannot regress payment state | `gateway_version` comparison + reachability | 2 ✔ |
+| I10 | Reconciliation never silently overwrites ambiguous states | auto-fix allow-list via the guarded applier, otherwise OPEN | 3 ✔ |
+| I11 | Messages are acked only after the DB commit | manual ack in `PaymentEventListener` | 2 ✔ |
+| I12 | Every manual intervention is audited and immutable | `audit_logs` + DB trigger rejecting UPDATE/DELETE | 2 ✔ |
 
 ✔ = implemented in code; see `testing-results.md` for which checks have actually been executed.
 
@@ -126,15 +128,19 @@ payguard/
 │   │   ├── webhook/                 Module B: ingestion, parser, store
 │   │   │   ├── signature/           HMAC header format (shared wire protocol)
 │   │   │   └── verification/        provider adapters (WebhookVerifier)
-│   │   ├── outbox/                  Phase 2
-│   │   ├── worker/                  Phase 2 (RabbitMQ consumer, retries, DLQ)
-│   │   ├── reconciliation/          Phase 3
-│   │   └── faults/                  Phase 4 (failure injection, local/demo profile only)
+│   │   ├── outbox/                  transactional outbox store + publisher (SKIP LOCKED, confirms)
+│   │   ├── messaging/               RabbitMQ topology (exchange, queue, DLX, DLQ)
+│   │   ├── worker/                  consumer, processor, retry policy, failure handler, dead letters
+│   │   ├── reconciliation/          rules (pure), service, store, controller + scheduler
+│   │   ├── audit/                   append-only audit log
+│   │   ├── faults/                  fault injection (demo only)
+│   │   ├── simulation/              12 failure scenarios + recorder
+│   │   └── ops/                     dashboard / health / timeline API
 │   ├── src/main/resources/db/migration/   Flyway V1..Vn
 │   └── src/test/
 │       ├── java/…                   *Test = unit (surefire), *IT = integration (failsafe)
 │       └── sql/                     schema_checks.sql, pgbench concurrency script
-├── frontend/                        Phase 4: React + TS + Vite dashboard
+├── frontend/                        React + TS + Vite + Tailwind dashboard (+ Playwright e2e)
 ├── docs/                            design, ADRs, interview guide, test results
 ├── .github/workflows/ci.yml
 ├── docker-compose.yml
@@ -150,3 +156,14 @@ payguard/
 | **3 Correctness** | Stale/out-of-order handling with versions; reconciliation (merchant vs gateway vs settlement); safe auto-recovery allow-list; audit log | Missing-webhook and amount-mismatch scenarios detected and recovered/flagged |
 | **4 Differentiators** | Failure-injection engine (12 scenarios, demo profile only); Micrometer metrics; React dashboard; interview demo mode; load tests | Every simulation runs real backend logic and shows DB evidence |
 | **5 Final quality** | Security review, rate limiting, JSON logs, full docs, demo video script | Acceptance criteria in the master prompt §12 |
+
+## 8. Runtime topology (docker-compose)
+
+| Process | Role | Key settings |
+|---------|------|--------------|
+| `backend` | HTTP API, webhook ingestion, outbox publisher, gateway simulator, reconciliation scheduler, failure lab | `PAYGUARD_WORKER_ENABLED=false` |
+| `worker` ×2 | RabbitMQ consumers only (no web server) | `SPRING_MAIN_WEB_APPLICATION_TYPE=none`, publisher/simulator/reconciliation off |
+| `frontend` | nginx serving the dashboard and proxying `/api` | same origin → no CORS |
+| `postgres`, `rabbitmq` | state and messaging | durable volumes |
+
+The same jar runs in both roles; CI's e2e job starts exactly this split (API + separate worker).

@@ -91,3 +91,58 @@ curl $A "localhost:8080/api/webhook-events?gatewayPaymentId=$PAY"      # 2 event
 EVT=$(curl -s $A localhost:8080/sim/gateway/payments/$PAY/events | jq -r '.[1].id')
 curl $A -X POST localhost:8080/sim/gateway/events/$EVT/redeliver      # duplicate → duplicate_count = 1
 ```
+
+---
+
+## Phase 2–5 endpoints
+
+All `GET /api/**` allow `ADMIN` or `VIEWER`; every other method needs `ADMIN`. Errors: same `ApiError` shape.
+Rate limit: 429 `RATE_LIMITED` with `Retry-After`. Every response carries `X-Correlation-Id`.
+
+### Session
+| `GET /api/me` | `{username, roles[], faultsEnabled}` |
+|---|---|
+
+### Processing & dead letters
+| Method & path | Notes |
+|---|---|
+| `GET /api/webhook-events?status=&eventId=&gatewayPaymentId=&limit=` | now includes `attemptCount`, `processingResult`, `lastError` |
+| `GET /api/webhook-events/{id}/attempts` | retry history (outcome, worker, redelivered, error, retry delay) |
+| `GET /api/webhook-events/{id}/outbox` | outbox rows (INGEST / RETRY / REPLAY) |
+| `GET /api/dead-letters` | `{events[], brokerDlqDepth}` |
+| `POST /api/dead-letters/{webhookEventId}/replay` | body `{"reason": "…"}` (required, audited). 409 `NOT_DEAD_LETTERED` unless DEAD |
+
+### Reconciliation
+| Method & path | Notes |
+|---|---|
+| `POST /api/reconciliation/runs` | runs synchronously, returns the run. 409 `RECONCILIATION_ALREADY_RUNNING` |
+| `GET /api/reconciliation/runs?limit=` · `GET /api/reconciliation/runs/{id}` | |
+| `GET /api/reconciliation/mismatches?runId=&resolution=&limit=` | resolution ∈ OPEN, AUTO_RESOLVED, ALREADY_CONSISTENT, INFORMATIONAL, RESOLVED_MANUALLY |
+| `POST /api/reconciliation/mismatches/{id}/resolve` | body `{"note": "…"}` (required, audited). 409 `NOT_OPEN` |
+| `GET /api/reconciliation/runs/{id}/report.csv` | RFC 4180 CSV, formula-injection safe |
+
+### Operations / dashboard
+| Method & path | Notes |
+|---|---|
+| `GET /api/ops/summary` | counts by status, backlog, queue/DLQ depth, open mismatches, last run |
+| `GET /api/ops/timeseries` | 60 one-minute buckets: received, rejected, processed, failed, skipped |
+| `GET /api/ops/health` | DB/RabbitMQ status, workers (from DB heartbeat), outbox, latency percentiles |
+| `GET /api/payments?status=&q=&limit=` | `q` = payment id, order id or gateway id |
+| `GET /api/payments/{id}/timeline` | merchant + live gateway view + merged lifecycle + audit |
+| `GET /api/audit?targetType=&targetId=&limit=` | audit trail |
+| `GET /actuator/prometheus` | ADMIN only |
+
+### Failure simulation lab (only when `PAYGUARD_FAULTS_ENABLED=true` and simulator enabled; otherwise 404)
+| Method & path | Notes |
+|---|---|
+| `GET /api/simulations/scenarios` | the 12 scenarios with explanations |
+| `POST /api/simulations/{SCENARIO}/runs` | starts in background → `{runId, status: RUNNING}` |
+| `GET /api/simulations/runs/{id}` | `status` RUNNING/PASSED/FAILED/ERROR, `steps` (JSON timeline with evidence), `invariants` |
+| `GET /api/simulations/runs?scenario=&limit=` | history |
+| `GET /api/faults` · `POST /api/faults/{POINT}` `{"times": n}` · `DELETE /api/faults` | low-level fault switches |
+
+### Gateway simulator additions
+| `GET /sim/gateway/payments?updatedSince=ISO&afterId=&limit=` | keyset-paginated status list (used by reconciliation) |
+|---|---|
+| `POST /sim/gateway/settlements/run` `{"cutoff": ISO?}` | creates a settlement batch (2% fee, integer maths) |
+| `GET /sim/gateway/settlements?since=ISO` | settlement reports |

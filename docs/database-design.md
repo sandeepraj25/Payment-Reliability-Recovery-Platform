@@ -97,9 +97,9 @@ Delivery log for every HTTP attempt (status, error, duration, AUTO vs MANUAL_RED
 
 ---
 
-## Designed, not yet migrated
+## Phase 2–4 tables (migrations V5–V8, implemented)
 
-### `outbox_events` — Phase 2 (V5)
+### `outbox_events` — V5
 ```sql
 CREATE TABLE outbox_events (
   id               BIGSERIAL PRIMARY KEY,
@@ -120,27 +120,34 @@ CREATE INDEX ix_outbox_pending ON outbox_events (next_attempt_at) WHERE status =
 Publisher: `SELECT … WHERE status='PENDING' AND next_attempt_at <= now() ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED`,
 publish with confirms, mark PUBLISHED. Ambiguous confirm ⇒ leave PENDING ⇒ republish ⇒ consumer dedups (at-least-once).
 
-### `fulfilments` — Phase 2 (idempotent business effect)
+### `fulfilments` — V5 (idempotent business effect)
 `UNIQUE (order_id)` + `INSERT … ON CONFLICT DO NOTHING`. Two *different* events that both mean "paid"
 (e.g. a webhook and a reconciliation recovery) still ship once.
 
-### `processing_attempts` — Phase 2
+### `processing_attempts` — V5 (outcome widened to VARCHAR(32) in V6)
 `(webhook_event_id FK, attempt_no)` unique; outcome `SUCCESS | TRANSIENT_FAILURE | PERMANENT_FAILURE | SKIPPED_STALE`,
 error class/message, worker id, duration. Retry history + DLQ evidence. Retention 30 days.
 
-### `reconciliation_runs` / `reconciliation_mismatches` — Phase 3
+### `reconciliation_runs` / `reconciliation_mismatches` — V6, identity key extended in V7
 Run: id, started/finished, window, counts, status. Mismatch: `run_id FK`, gateway/merchant payment refs,
 `mismatch_type` (GATEWAY_CAPTURED_MERCHANT_PENDING, MERCHANT_CAPTURED_GATEWAY_NOT, AMOUNT_MISMATCH,
 MISSING_SETTLEMENT, DELAYED_SETTLEMENT, …), `evidence JSONB`, `resolution` (OPEN | AUTO_RESOLVED | MANUAL_REVIEW | RESOLVED).
 Unique `(run_id, gateway_payment_id, mismatch_type)`.
 
-### `refund_records` — Phase 3
-Merchant-side refund requests with their own idempotency key → gateway refund id. Unique `(gateway_refund_id)`.
+### Refund records
+Refunds are recorded on the gateway side (`gateway.gateway_refunds`, one row per refund, `UNIQUE(payment_id, idempotency_key)`) and reflected on the merchant payment via `amount_refunded_minor` + versioned `payment.refunded` events. A separate merchant `refund_records` table was not needed for the flows implemented (no merchant-initiated refund API yet) — listed under known limitations.
 
-### `settlement_records` — Phase 3
+### `settlement_batches` / `settlement_records` — V6 (merchant copy; gateway side in `gateway.settlement_*`)
 Rows from the simulated settlement report: `settlement_batch_id`, `gateway_payment_id`, gross, fee, net, `settled_at`.
 Unique `(settlement_batch_id, gateway_payment_id)`. Captured ≠ settled.
 
-### `audit_logs` — Phase 3
-Append-only: actor, action, target, before/after JSONB, reason, correlation id. The app's DB role gets
-`INSERT, SELECT` only (`REVOKE UPDATE, DELETE`) so history cannot be rewritten by the app.
+### `audit_logs` — V5
+Append-only: actor, action, target, before/after JSONB, reason, correlation id. **Enforced by a trigger** that
+raises on UPDATE/DELETE (TRUNCATE is still possible for test cleanup). Production: app role `INSERT, SELECT` only.
+
+### `fault_injections` — V5 (demo only)
+One row per armed fault point (`remaining` shots). Stored in the DB so the API process can arm a fault that the worker
+process consumes.
+
+### `simulation_runs` — V8 (demo only)
+Scenario, status, JSONB timeline of steps with evidence, JSONB invariants.

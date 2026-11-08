@@ -178,3 +178,88 @@ jobs:
             frontend/test-results
             backend.log
             worker.log
+
+  # Load / performance test against the REAL stack (API process + separate worker + PostgreSQL + RabbitMQ).
+  # Fails only if a correctness invariant breaks under load; latency numbers are recorded, never asserted.
+  # The rate limiter is disabled here on purpose: from one client IP it would cap throughput at 50 req/s.
+  load:
+    needs: [backend]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: payguard
+          POSTGRES_USER: payguard
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payguard" --health-interval 5s --health-timeout 3s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: payguard
+          RABBITMQ_DEFAULT_PASS: ci-only-password
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 20
+    env:
+      PAYGUARD_DB_URL: jdbc:postgresql://localhost:5432/payguard
+      PAYGUARD_DB_USER: payguard
+      PAYGUARD_DB_PASSWORD: ci-only-password
+      PAYGUARD_RABBIT_HOST: localhost
+      PAYGUARD_RABBIT_USER: payguard
+      PAYGUARD_RABBIT_PASSWORD: ci-only-password
+      PAYGUARD_ADMIN_PASSWORD: ci-admin-password
+      PAYGUARD_GATEWAY_CLIENT_SECRET: ci-gateway-secret
+      PAYGUARD_WEBHOOK_SECRET: ci-webhook-secret-0123456789
+      PAYGUARD_SIMULATOR_ENABLED: "true"
+      PAYGUARD_FAULTS_ENABLED: "false"
+      PAYGUARD_RECON_SCHEDULED: "false"
+      PAYGUARD_RATE_LIMIT_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build backend jar
+        run: mvn -B -q -f backend/pom.xml package -DskipTests
+      - name: Start API process
+        run: |
+          PAYGUARD_WORKER_ENABLED=false nohup java -jar backend/target/payguard-backend-0.1.0-SNAPSHOT.jar > backend.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf localhost:8080/actuator/health && exit 0; sleep 2; done
+          tail -100 backend.log; exit 1
+      - name: Start worker process
+        run: |
+          PAYGUARD_WORKER_ENABLED=true PAYGUARD_OUTBOX_PUBLISHER_ENABLED=false PAYGUARD_SIMULATOR_ENABLED=false \
+          SPRING_MAIN_WEB_APPLICATION_TYPE=none SPRING_FLYWAY_ENABLED=false \
+            nohup java -jar backend/target/payguard-backend-0.1.0-SNAPSHOT.jar > worker.log 2>&1 &
+          for i in $(seq 1 60); do grep -q 'Started PayGuardApplication' worker.log && exit 0; sleep 2; done
+          tail -100 worker.log; exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Warm-up (JIT, connection pools) - not measured
+        run: |
+          BASE_URL=http://localhost:8080 ADMIN_PASSWORD=ci-admin-password WEBHOOK_SECRET=ci-webhook-secret-0123456789 \
+          CHECKOUTS=50 PIPELINES=20 WEBHOOKS=200 STORM_KEYS=5 OUT=warmup.json node loadtest/run.mjs > warmup.log 2>&1 || (tail -60 warmup.log; exit 1)
+      - name: Load test (measured)
+        run: |
+          BASE_URL=http://localhost:8080 ADMIN_PASSWORD=ci-admin-password WEBHOOK_SECRET=ci-webhook-secret-0123456789 \
+          LOADTEST_ENV_NOTE="GitHub-hosted ubuntu-latest runner; load generator, API, worker, PostgreSQL and RabbitMQ on the same VM" \
+          OUT=loadtest-results.json node loadtest/run.mjs
+      - name: Process logs on failure
+        if: failure()
+        run: |
+          echo "--- API"; tail -80 backend.log
+          echo "--- WORKER"; tail -80 worker.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest
+          path: |
+            loadtest-results.json
+            backend.log
+            worker.log
