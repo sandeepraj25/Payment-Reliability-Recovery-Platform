@@ -42,7 +42,7 @@ const RUN = Date.now().toString(36);   // makes ids unique across runs against t
 // Security run a BCrypt check (deliberately slow, tens of ms of CPU) on every call and distort the measurement.
 async function call(method, path, { body, headers = {}, raw = false, noAuth = false } = {}) {
   const t0 = performance.now();
-  let status = 0, text = '', error = null;
+  let status = 0, text = '', error = null, retryAfter = null;
   try {
     const res = await fetch(BASE + path, {
       method,
@@ -51,6 +51,7 @@ async function call(method, path, { body, headers = {}, raw = false, noAuth = fa
       body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     });
     status = res.status;
+    retryAfter = res.headers.get('retry-after');
     text = await res.text();
   } catch (e) {
     error = e.cause?.code ?? e.message;   // transport error (connection refused/reset), not an HTTP status
@@ -58,7 +59,7 @@ async function call(method, path, { body, headers = {}, raw = false, noAuth = fa
   const ms = performance.now() - t0;
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON body */ }
-  return { status, json, text, ms, error };
+  return { status, json, text, ms, error, retryAfter };
 }
 
 /** Runs `tasks` (array of async fns) with at most `limit` in flight. Returns results in order. */
@@ -86,7 +87,8 @@ function stats(name, samples, wallMs, extra = {}) {
   const lat = samples.map((s) => s.ms).sort((a, b) => a - b);
   const codes = {};
   for (const s of samples) {
-    const k = s.error ? `transport:${s.error}` : String(s.status);
+    const k = s.error ? `transport:${s.error}`
+      : s.status >= 400 && s.json?.code ? `${s.status}:${s.json.code}` : String(s.status);
     codes[k] = (codes[k] ?? 0) + 1;
   }
   const r = (x) => (x == null ? null : Math.round(x * 10) / 10);
@@ -98,8 +100,32 @@ function stats(name, samples, wallMs, extra = {}) {
   };
 }
 
+const tally = (xs) => xs.reduce((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {});
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const checkoutBody = (i) => ({ customerRef: `load_${i}`, amountMinor: 499900, currency: 'INR' });
+
+const MAX_CHECKOUT_ATTEMPTS = 10;
+/**
+ * A client that follows the documented API contract: 409 (same key still in progress) and 503 (temporarily
+ * unavailable, with Retry-After) mean "retry with the SAME Idempotency-Key". Each retry waits
+ * max(Retry-After, exponential backoff with jitter). Returns the first attempt (latency of a single request),
+ * the final attempt, the total time until the final answer and every intermediate status seen.
+ */
+async function checkoutWithRetry(key, body) {
+  const t0 = performance.now();
+  const seen = [];
+  let first = null, last = null;
+  for (let attempt = 1; attempt <= MAX_CHECKOUT_ATTEMPTS; attempt++) {
+    last = await call('POST', '/api/checkout', { body, headers: { 'Idempotency-Key': key } });
+    first ??= last;
+    seen.push(last.error ? `transport:${last.error}` : last.status >= 400 && last.json?.code ? `${last.status}:${last.json.code}` : String(last.status));
+    if (last.error || (last.status !== 409 && last.status !== 503)) break;
+    const retryAfterMs = (Number(last.retryAfter) || 0) * 1000;   // header in seconds; absent -> backoff only
+    const backoff = Math.min(4000, 100 * 2 ** (attempt - 1)) * (0.5 + Math.random());
+    await sleep(Math.max(retryAfterMs, backoff));
+  }
+  return { first, last, seen, totalMs: performance.now() - t0 };
+}
 
 const failures = [];
 function invariant(ok, message) {
@@ -112,12 +138,14 @@ function invariant(ok, message) {
 /** 1. Checkout API: unique Idempotency-Keys, measures the idempotent create path incl. the gateway HTTP call. */
 async function checkoutLoad() {
   const t0 = performance.now();
-  const samples = await pool(Array.from({ length: CFG.checkouts }, (_, i) => () =>
-    call('POST', '/api/checkout', { body: checkoutBody(i), headers: { 'Idempotency-Key': `load-${RUN}-${i}` } })),
-  CFG.checkoutConcurrency);
+  const runs = await pool(Array.from({ length: CFG.checkouts }, (_, i) => () =>
+    checkoutWithRetry(`load-${RUN}-${i}`, checkoutBody(i))), CFG.checkoutConcurrency);
   const wall = performance.now() - t0;
-  const created = samples.filter((s) => s.status === 201).map((s) => s.json);
-  return { report: stats('checkout (unique keys)', samples, wall, { concurrency: CFG.checkoutConcurrency }), created, samples };
+  const firsts = runs.map((r) => r.first);
+  const created = runs.filter((r) => r.last.status === 201).map((r) => r.last.json);
+  return { report: stats('checkout (unique keys), first attempt', firsts, wall,
+    { concurrency: CFG.checkoutConcurrency, retriedRequests: runs.filter((r) => r.seen.length > 1).length,
+      intermediateResponses: tally(runs.flatMap((r) => r.seen.slice(0, -1))) }), created, runs };
 }
 
 /** 2. Retry storm: STORM_KEYS keys, each sent STORM_COPIES times at the same moment. Must create one order per key. */
@@ -125,24 +153,28 @@ async function retryStorm() {
   const tasks = [];
   for (let k = 0; k < CFG.stormKeys; k++) {
     for (let c = 0; c < CFG.stormCopies; c++) {
-      tasks.push(() => call('POST', '/api/checkout', {
-        body: checkoutBody(`storm_${k}`), headers: { 'Idempotency-Key': `storm-${RUN}-${k}` } }));
+      tasks.push(() => checkoutWithRetry(`storm-${RUN}-${k}`, checkoutBody(`storm_${k}`)));
     }
   }
   const t0 = performance.now();
-  const samples = await Promise.all(tasks.map((t) => t()));   // all in flight at once
+  const runs = await Promise.all(tasks.map((t) => t()));   // all first attempts in flight at once
   const wall = performance.now() - t0;
-  // Every 201 for one key must carry the same orderId.
+  // Every request must END with 201, and all requests for one key must carry the same orderId.
   const byKey = new Map();
-  samples.forEach((s, i) => {
-    if (s.status !== 201) return;
+  runs.forEach((r, i) => {
     const key = Math.floor(i / CFG.stormCopies);
     if (!byKey.has(key)) byKey.set(key, new Set());
-    byKey.get(key).add(s.json?.orderId);
+    byKey.get(key).add(r.last.status === 201 ? r.last.json?.orderId : `not-201:${r.last.status}`);
   });
   const conflictingKeys = [...byKey.values()].filter((set) => set.size > 1).length;
-  return { report: stats('checkout retry storm (same key ×' + CFG.stormCopies + ')', samples, wall,
-    { keys: CFG.stormKeys, keysWithDifferentOrderIds: conflictingKeys }), samples, conflictingKeys };
+  const resolve = runs.map((r) => ({ ms: r.totalMs, status: r.last.status, error: r.last.error }));
+  return {
+    report: stats('checkout retry storm (same key ×' + CFG.stormCopies + '), first attempt', runs.map((r) => r.first), wall,
+      { keys: CFG.stormKeys, keysWithDifferentOrderIds: conflictingKeys,
+        intermediateResponses: tally(runs.flatMap((r) => r.seen.slice(0, -1))) }),
+    resolveReport: stats('checkout retry storm, time until final answer (client retries per contract)', resolve, wall),
+    runs, conflictingKeys,
+  };
 }
 
 /**
@@ -196,9 +228,15 @@ async function webhookLoad() {
   }
   // Shuffle so duplicates interleave with first deliveries (some duplicates race their original).
   for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+  // A real gateway resends the IDENTICAL body (it only re-signs with a fresh timestamp), so build each body once.
+  const bodies = new Map();
+  const bodyFor = (id) => {
+    if (!bodies.has(id)) bodies.set(id, JSON.stringify({ id, type: 'loadtest.ping', created_at: new Date().toISOString() }));
+    return bodies.get(id);
+  };
   const t0 = performance.now();
   const samples = await pool(ids.map((id) => () => {
-    const body = JSON.stringify({ id, type: 'loadtest.ping', created_at: new Date().toISOString() });
+    const body = bodyFor(id);
     const t = Math.floor(Date.now() / 1000);
     const sig = createHmac('sha256', SECRET).update(`${t}.${body}`).digest('hex');
     return call('POST', '/api/webhooks/payguard-sim', {
@@ -240,11 +278,21 @@ async function main() {
   }
 
   console.log('\n--- invariants');
-  const all = [...co.samples, ...storm.samples, ...wh.samples, ...pipe.redeliveries];
-  invariant(all.every((s) => !s.error && s.status < 500), 'no 5xx responses and no transport errors in any workload');
-  invariant(co.created.length === CFG.checkouts, `every unique-key checkout created (201): ${co.created.length}/${CFG.checkouts}`);
-  invariant(storm.samples.every((s) => s.status === 201 || s.status === 409), 'retry storm returned only 201 (owner/replay) or 409 (in progress)');
-  invariant(storm.conflictingKeys === 0, 'retry storm: one key never produced two different orders');
+  // 503 (with Retry-After) and 409 are documented "retry with the same key" signals. Anything else 5xx, or a
+  // transport error, is unexpected. Every intermediate response ever seen is checked, not only final ones.
+  const RETRY_SIGNALS = new Set(['409:IDEMPOTENCY_REQUEST_IN_PROGRESS', '503:GATEWAY_UNAVAILABLE', '503:TEMPORARILY_UNAVAILABLE']);
+  const checkoutSeen = [...co.runs, ...storm.runs].flatMap((r) => r.seen);
+  const other = [...wh.samples, ...pipe.redeliveries];
+  const unexpected = checkoutSeen.filter((x) => x.startsWith('transport:') || (/^5/.test(x) && !RETRY_SIGNALS.has(x)))
+    .concat(other.filter((s) => s.error || s.status >= 500).map((s) => s.error ?? String(s.status)));
+  invariant(unexpected.length === 0,
+    `no unexpected server errors (500/502) and no transport errors in any workload${unexpected.length ? ': ' + JSON.stringify(tally(unexpected)) : ''}`);
+  invariant(checkoutSeen.every((x) => x === '201' || RETRY_SIGNALS.has(x)),
+    'checkout only ever answered 201 or a documented retry signal (409 in progress / 503 with Retry-After)');
+  invariant(co.created.length === CFG.checkouts, `every unique-key checkout ended in 201: ${co.created.length}/${CFG.checkouts}`);
+  invariant(storm.runs.every((r) => r.last.status === 201),
+    `retry storm: every one of ${storm.runs.length} requests ended in 201 by retrying with its key`);
+  invariant(storm.conflictingKeys === 0, 'retry storm: all requests for one key got the same orderId');
   const ordersAfter = Object.values(after.ordersByStatus ?? {}).reduce((a, b) => a + b, 0);
   invariant(ordersAfter - ordersBefore === CFG.checkouts + CFG.stormKeys,
     `orders created = unique keys (${CFG.checkouts} + ${CFG.stormKeys}); observed ${ordersAfter - ordersBefore}`);
@@ -266,7 +314,7 @@ async function main() {
       cpuModel: os.cpus()[0]?.model, memoryGb: Math.round(os.totalmem() / 2 ** 30),
       note: env('LOADTEST_ENV_NOTE', 'load generator, API, worker, PostgreSQL and RabbitMQ share this machine') },
     config: CFG,
-    workloads: [co.report, storm.report, pipe.capture, pipe.e2e, pipe.redelivery, wh.report],
+    workloads: [co.report, storm.report, storm.resolveReport, pipe.capture, pipe.e2e, pipe.redelivery, wh.report],
     invariants: { passed: failures.length === 0, failures },
   };
 

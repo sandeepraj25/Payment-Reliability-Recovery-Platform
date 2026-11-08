@@ -253,8 +253,8 @@ jobs:
       - name: Process logs on failure
         if: failure()
         run: |
-          echo "--- API"; tail -80 backend.log
-          echo "--- WORKER"; tail -80 worker.log
+          echo "--- API warnings/errors"; grep -E ' (WARN|ERROR) ' backend.log | cut -c1-400 | tail -60 || true
+          echo "--- WORKER warnings/errors"; grep -E ' (WARN|ERROR) ' worker.log | cut -c1-400 | tail -60 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
