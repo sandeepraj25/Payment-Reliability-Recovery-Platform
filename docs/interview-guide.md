@@ -316,3 +316,32 @@ evidence per step; `SimulationIT` requires all 12 to end PASSED.
 | Tomcat accept queue (100) overflowed on 1,000 simultaneous connections | "header parser received no bytes" in the client | Load generator ≠ system bug; size `accept-count`, and make the client retry transport errors *like a real gateway*, reporting the count. |
 | Same-version duplicate in a batch of shuffled events | (anticipated) | Versions alone don't stop two *different* events meaning "paid" — `UNIQUE(order_id)` on fulfilments is the last line. |
 | Worker-only process would not start | found in review: security config needs a web app; simulation beans need the simulator | Conditional beans per process role; CI now runs the API and a separate worker. |
+
+---
+
+## Feature — Load test that checks correctness, not just speed
+
+**Problem.** Bugs in idempotency and dedup often appear only under concurrency, and "it's fast" means nothing if
+it is fast at shipping orders twice.
+
+**Implementation.** `loadtest/run.mjs` (no dependencies) drives the real split API/worker stack in CI: unique-key
+checkouts, a retry storm (6 simultaneous copies per key), 200 capture → fulfilment pipelines with 150 duplicate
+redeliveries, and 2,000 signed webhooks with 20 % repeated ids. It exits non-zero only if an invariant breaks.
+It sets no latency thresholds, because a threshold invented for a shared CI VM would be a fake benchmark.
+The harness was itself tested against a deliberately buggy fake server, and it caught "105 fulfilments for 60 orders".
+
+**Result (CI run 42466527296).** 12/12 invariants held; webhook ingest p50 28.6 ms at 1,290 req/s; checkout p50 805 ms.
+
+**The finding.** Checkout was ~28× slower than webhook ingest. The difference is consistent with BCrypt: every
+Basic-auth request re-verifies a cost-10 BCrypt hash (~78 ms CPU), and a checkout does it twice. See
+`testing-results.md` §2 for the arithmetic.
+
+**Interview questions.**
+* *Why is BCrypt slow on purpose?* It is designed to make password guessing expensive. That is right for login, and
+  wrong for authenticating every API call. Authenticate once, then use tokens or HMAC-checked API keys.
+* *Why test the test?* A check that never fails proves nothing. Mutation-style checks (inject the bug, see it fail)
+  show the assertion is real.
+* *What is p99 and why report it?* 99 % of requests were faster than this. Averages hide the slow tail, and the
+  tail is what users and retry storms feel.
+* *How would you lower end-to-end latency?* The 500 ms outbox poll dominates. Poll more often (more DB load), or wake
+  the publisher with PostgreSQL `LISTEN/NOTIFY` after commit and keep polling as the safety net.
