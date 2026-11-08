@@ -330,7 +330,10 @@ redeliveries, and 2,000 signed webhooks with 20 % repeated ids. It exits non-zer
 It sets no latency thresholds, because a threshold invented for a shared CI VM would be a fake benchmark.
 The harness was itself tested against a deliberately buggy fake server, and it caught "105 fulfilments for 60 orders".
 
-**Result (CI run 42466527296).** 12/12 invariants held; webhook ingest p50 28.6 ms at 1,290 req/s; checkout p50 805 ms.
+**Result (CI run 42467595295).** 13/13 invariants held. Webhook ingest p50 28.6-31.8 ms across two runners; checkout p50
+805-989 ms. One earlier run was red: the load generator itself had two flaws (non-identical duplicate bodies; treating the
+documented 503 "retry with the same key" as a failure instead of retrying). Fixing the *test* made the invariant stricter:
+every request must end in 201.
 
 **The finding.** Checkout was ~28× slower than webhook ingest. The difference is consistent with BCrypt: every
 Basic-auth request re-verifies a cost-10 BCrypt hash (~78 ms CPU), and a checkout does it twice. See
@@ -343,5 +346,8 @@ Basic-auth request re-verifies a cost-10 BCrypt hash (~78 ms CPU), and a checkou
   show the assertion is real.
 * *What is p99 and why report it?* 99 % of requests were faster than this. Averages hide the slow tail, and the
   tail is what users and retry storms feel.
+* *What is retry amplification?* 300 logical requests became ~1,327 attempts in the storm. Every retry adds load to an
+  already overloaded system. Backoff with jitter, `Retry-After`, attempt caps and cheap rejection (409 before expensive
+  work) keep it bounded.
 * *How would you lower end-to-end latency?* The 500 ms outbox poll dominates. Poll more often (more DB load), or wake
   the publisher with PostgreSQL `LISTEN/NOTIFY` after commit and keep polling as the safety net.

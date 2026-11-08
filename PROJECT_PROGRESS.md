@@ -4,7 +4,7 @@ _Last updated: 2026-11-08_
 
 ## Current phase
 **All five phases implemented and CI-verified.** `main` green at `1ab27c3` (run 42448183066); the Phase 5
-additions (load test, final docs) are green on branch `phase-5-final-quality` (run 42466527296), awaiting merge.
+additions (load test, final docs) are green on branch `phase-5-final-quality` (run 42467595295, `57e688b`), awaiting merge.
 
 ## Completed features
 | Phase | Delivered |
@@ -21,13 +21,13 @@ additions (load test, final docs) are green on branch `phase-5-final-quality` (r
 | CI run 42448183066 (`main`, `1ab27c3`) | `mvn verify` | **155 unit + 80 integration tests, 0 failures, 0 errors** |
 | same | SQL schema checks + pgbench 1,000-way dedup | all checks passed; `rows=1 duplicate_count=999` |
 | same | frontend build; Playwright e2e (API + separate worker + PostgreSQL + RabbitMQ) | build ok; **6/6 passed** |
-| CI run 42466527296 (branch `phase-5-final-quality`, `43acfdb`) | all 5 jobs incl. load test | 155 + 80 tests, 0 failures; Playwright 6/6; **load test: 12/12 invariants passed** (200 fulfilments for 200 orders despite 150 duplicate redeliveries; 1,600 of 2,000 webhooks stored once, 400 duplicates recognised). Latencies in `docs/testing-results.md` |
+| CI run 42467595295 (branch `phase-5-final-quality`, `57e688b`) | all 5 jobs incl. load test | 155 + 80 tests, 0 failures; Playwright 6/6; **load test 13/13 invariants** (300-request retry storm → exactly 50 orders; 200 fulfilments for 200 orders despite 150 duplicate redeliveries; 400 of 2,000 webhooks recognised as duplicates). One earlier load run was red because of a load-generator flaw, fixed and documented in `docs/testing-results.md` §2 |
 | Dev workspace (Phase 1) | migrations, 21 schema checks, pgbench ×2, 78 smoke checks | passed (details in testing-results) |
 
 ## Known limitations
 1. **Not production-certified.** Self-review only, no penetration test (`docs/security-review.md`).
 2. Auth is HTTP Basic + BCrypt per request (stateless, simple); production would use OIDC and short-lived tokens.
-   It also costs CPU on every API call; this shows up in the load-test latencies.
+   It costs ~78 ms of CPU per request, which dominates checkout latency and amplifies retry storms (load test §2).
 3. Rate limiting is per instance, in memory (effective limit = N × configured with N instances).
 4. No TLS in the local stack; one DB role for app and migrations; no dependency scanning in CI yet.
 5. Load-test numbers come from a shared GitHub runner where everything runs on one VM. They describe that
