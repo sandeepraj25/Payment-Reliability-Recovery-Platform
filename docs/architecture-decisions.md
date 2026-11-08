@@ -50,3 +50,46 @@ Short format: context → decision → consequences. Newest last.
 * **Decision**: `IntegrationTestBase` starts PostgreSQL 16 via Testcontainers, or uses `PAYGUARD_TEST_DB_URL`.
   No H2: it does not reproduce PostgreSQL's locking/`ON CONFLICT` behaviour, so green H2 tests would prove nothing.
 * **Note**: the first development environment had no Docker and no Maven Central access; see `testing-results.md`.
+
+## ADR-009 — Transactional outbox polled with `FOR UPDATE SKIP LOCKED` (not CDC)
+* **Decision**: outbox row in the same transaction as the event; a scheduled publisher claims due rows with
+  `SKIP LOCKED`, publishes with **publisher confirms**, marks PUBLISHED. Ambiguous outcome → stays PENDING → republished.
+* **Why not Debezium/CDC**: another always-on component (Kafka Connect) for a modular monolith; polling at 500 ms is enough.
+* **Consequence**: at-least-once publishing → every consumer must be idempotent (it is).
+
+## ADR-010 — Retries scheduled through the outbox, not RabbitMQ TTL/delay queues
+* **Decision**: a transient failure inserts a RETRY outbox row with `next_attempt_at = now + backoff(jitter)`, then acks.
+* **Why**: per-message TTL queues have head-of-line blocking (a 30 s message blocks a 1 s one behind it); the delayed-message
+  plugin is non-standard. The outbox already guarantees durability and is queryable.
+* **Consequence**: retry precision ≈ poll interval (500 ms). Fine for payment events.
+
+## ADR-011 — Manual ack after commit; dead letters via `basicReject(requeue=false)`
+* **Decision**: commit, then ack. Permanent failures / exhausted budget → status DEAD in PostgreSQL (source of truth) +
+  reject → broker dead-letters the original message (with `x-death` headers) to a 7-day DLQ parking lot.
+* **Consequence**: duplicates after a crash are possible and handled; loss is not possible.
+
+## ADR-012 — Versions + reachability for out-of-order events
+* **Decision**: per-payment version from the gateway (bumped under its row lock). Merchant applies only newer versions,
+  and only if the target state is reachable in the state machine graph.
+* **Why not timestamps**: clock skew. **Why not reject everything that is not a single legal step**: a lost
+  intermediate webhook would block valid newer state forever.
+
+## ADR-013 — One guarded applier for worker and reconciliation
+* **Decision**: `GatewayStateApplier` is the only code that copies gateway state onto merchant rows.
+* **Why**: two code paths that both "fix" payments will eventually disagree; one path means one set of invariants and
+  one set of tests.
+
+## ADR-014 — Fault injection stored in PostgreSQL, decided outside the main transaction
+* **Decision**: `fault_injections` table, consumed with `REQUIRES_NEW`, and checked **before** the work transaction.
+* **Why**: works across processes; consumption survives the crash it triggers; avoids holding two pooled connections
+  per thread (pool starvation under load).
+* **Safety**: beans exist only when `payguard.faults.enabled=true`; production returns 404 for the lab URLs.
+
+## ADR-015 — In-memory rate limiting, Redis only if horizontally scaled
+* **Decision**: token bucket per client IP in a `ConcurrentHashMap` with eviction and a size cap.
+* **Trade-off**: with N instances the effective limit is N×; acceptable for the target deployment. Redis is the
+  justified upgrade path — and only for this, never for financial state or idempotency (ADR-003).
+
+## ADR-016 — Same jar, different roles (API vs worker process)
+* **Decision**: feature flags (`PAYGUARD_WORKER_ENABLED`, `…_OUTBOX_PUBLISHER_ENABLED`, `SPRING_MAIN_WEB_APPLICATION_TYPE=none`).
+* **Why**: scale workers independently without a second codebase; CI runs the split topology end to end.

@@ -3,52 +3,44 @@
 _Last updated: 2026-11-08_
 
 ## Current phase
-**Phase 1 — Core MVP: code complete, validation partial.** Phase 1 is *not* signed off until the JUnit suite
-has run green (CI or locally). Do not start Phase 2 before that.
+**All five phases implemented and CI-verified.** `main` green at `1ab27c3` (run 42448183066); the Phase 5
+additions (load test, final docs) are green on branch `phase-5-final-quality` (run 42467595295, `57e688b`), awaiting merge.
 
 ## Completed features
-- Project setup: Maven, Spring Boot 3.5.16, Java 21, `application.yml` with env-only secrets, `.env.example`, `.gitignore`
-- PostgreSQL schema V1–V4 (gateway tables, orders, payments, webhook_events, webhook_rejections, idempotency_records)
-- Gateway simulator (Module A): state machine, `FOR UPDATE` locking, idempotent create/refund, versioned events,
-  signed webhook delivery after commit, delivery log, manual redelivery
-- Webhook ingestion (Module B): `POST /api/webhooks/{provider}`, provider adapter interface, raw-byte HMAC,
-  constant-time compare, timestamp tolerance, secret rotation, schema validation, rejection log, durable dedup,
-  operator read endpoints
-- API idempotency (Module C part 1): `POST /api/checkout` with fingerprint, lease, fencing, recovery points,
-  deterministic gateway key
-- Error handling: structured `ApiError`; fixed catch-all that turned framework 404/405/400 into 500
-- Infra: Dockerfile, docker-compose (PostgreSQL + backend), GitHub Actions CI (JUnit + SQL checks + pgbench)
-- Docs: system design, database design (incl. designs for Phase 2–3 tables), ADRs, API, failure scenarios,
-  interview guide (Phase 1 features), learning roadmap, testing results
+| Phase | Delivered |
+|-------|-----------|
+| 1 Core MVP | Gateway simulator (state machine, row locks, idempotent create/refund, signed webhooks, redelivery); webhook ingestion (raw-byte HMAC, constant-time compare, replay window, rotation, schema validation, durable dedup, rejection log); API idempotency (fingerprint, lease, fencing, recovery points, deterministic gateway key) |
+| 2 Reliable processing | Transactional outbox in the ingestion TX; publisher with `FOR UPDATE SKIP LOCKED` + publisher confirms; RabbitMQ worker, ack after commit; idempotent fulfilment (`UNIQUE(order_id)`); retries with exponential backoff + jitter; transient vs permanent classification; DLQ with audited manual replay |
+| 3 Correctness | Version-based stale/out-of-order handling; reachability rules; reconciliation (merchant vs gateway vs settlement); safe auto-recovery allow-list, manual review otherwise; settlement modelled separately from capture; append-only audit log (DB trigger); CSV export |
+| 4 Differentiators | Failure Simulation Lab (12 scenarios on the real backend, DB evidence, invariant checks); ops/dashboard API; Micrometer metrics; JSON logs + correlation ids; React/TS dashboard (9 pages, light/dark); interview demo mode; Playwright e2e against the real stack |
+| 5 Final quality | Security review; roles (ADMIN/VIEWER/GATEWAY_CLIENT); rate limiting; CORS; split API/worker processes; Docker Compose (postgres, rabbitmq, API, 2 workers, dashboard); CI (5 jobs); load test; full documentation |
 
-## Actual tests run (2026-11-08)
-| Test | Result |
-|------|--------|
-| Flyway migrations on PostgreSQL 16.15 | ✅ pass |
-| `schema_checks.sql` | ✅ 21/21 pass |
-| pgbench: 1,000 concurrent duplicate inserts (100 clients) | ✅ 1 row, 999 duplicates counted, 0 failures |
-| pgbench: same with 200 clients | ✅ 1 row, 999 duplicates counted, 0 failures |
-| Java-embedded SQL prepared against real schema | ✅ all valid |
-| Pure-Java production classes compiled + 78-check smoke harness | ✅ 78/78 |
-| **JUnit unit + integration suite (8 classes)** | ⏳ **written, NOT executed** — see limitation 1 |
+## Actual tests run
+| Where | What | Result |
+|-------|------|--------|
+| CI run 42448183066 (`main`, `1ab27c3`) | `mvn verify` | **155 unit + 80 integration tests, 0 failures, 0 errors** |
+| same | SQL schema checks + pgbench 1,000-way dedup | all checks passed; `rows=1 duplicate_count=999` |
+| same | frontend build; Playwright e2e (API + separate worker + PostgreSQL + RabbitMQ) | build ok; **6/6 passed** |
+| CI run 42467595295 (branch `phase-5-final-quality`, `57e688b`) | all 5 jobs incl. load test | 155 + 80 tests, 0 failures; Playwright 6/6; **load test 13/13 invariants** (300-request retry storm → exactly 50 orders; 200 fulfilments for 200 orders despite 150 duplicate redeliveries; 400 of 2,000 webhooks recognised as duplicates). One earlier load run was red because of a load-generator flaw, fixed and documented in `docs/testing-results.md` §2 |
+| Dev workspace (Phase 1) | migrations, 21 schema checks, pgbench ×2, 78 smoke checks | passed (details in testing-results) |
 
 ## Known limitations
-1. The development workspace blocks Maven Central and has no Docker, so the Spring application has **never been
-   compiled or started**, and the JUnit suite has not run. First CI run may surface compile errors to fix.
-2. Merchant `payments.status` is not yet updated from webhooks — events are stored as `RECEIVED` and wait for the
-   Phase 2 worker. (This is exactly the "gateway CAPTURED, merchant still PENDING" gap the project exists to close.)
-3. Gateway sends each webhook once automatically; if the app dies between commit and send, that event is never
-   auto-delivered (deliberate: Phase 3 reconciliation must catch it). No automatic gateway retry schedule yet.
-4. Checkout is behind ADMIN basic auth (demo simplification). No rate limiting yet (Phase 5).
-5. Plain-text logs; JSON logs, correlation ids and metrics come in Phase 4.
+1. **Not production-certified.** Self-review only, no penetration test (`docs/security-review.md`).
+2. Auth is HTTP Basic + BCrypt per request (stateless, simple); production would use OIDC and short-lived tokens.
+   It costs ~78 ms of CPU per request, which dominates checkout latency and amplifies retry storms (load test §2).
+3. Rate limiting is per instance, in memory (effective limit = N × configured with N instances).
+4. No TLS in the local stack; one DB role for app and migrations; no dependency scanning in CI yet.
+5. Load-test numbers come from a shared GitHub runner where everything runs on one VM. They describe that
+   machine only and are not capacity claims.
+6. The development workspace blocks Maven Central, so Java is compiled and tested in CI, not locally there.
 
 ## Pending features
-Phase 2 outbox, RabbitMQ, worker, idempotent fulfilment, retries/DLQ · Phase 3 stale-event handling,
-reconciliation, settlement, audit log · Phase 4 fault injection, metrics, React dashboard, demo mode, load tests ·
-Phase 5 security review, rate limiting, final docs, demo video script.
+None of the brief's required features are outstanding. Possible next steps, not required:
+Dependabot/OWASP dependency check; OIDC login; a real sandbox provider adapter (e.g. Razorpay test mode)
+behind the existing `WebhookVerifier` interface; Redis-backed global rate limits.
 
-## Next implementation steps
-1. Push to GitHub → let CI run `mvn verify`; fix anything red; record real numbers in `docs/testing-results.md`.
-2. Run the app (`docker compose up`) and walk the curl demo in `docs/api-documentation.md`.
-3. Phase 2 kickoff: migration V5 (`outbox_events`, `fulfilments`, `processing_attempts`), write the outbox row in
-   the webhook transaction, then the publisher.
+## Next steps for you
+1. Review and merge `phase-5-final-quality` into `main`.
+2. Run `docker compose up --build` and walk `docs/demo-walkthrough.md` once yourself.
+3. Record the 5-minute demo video using the script in that file.
+4. Work through `docs/interview-guide.md`; re-implement one mechanism per day without looking.
