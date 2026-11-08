@@ -42,7 +42,11 @@ class WebhookIngestionIT extends IntegrationTestBase {
                         + "FROM webhook_events WHERE provider_event_id = 'evt_A1'")
                 .query((rs, n) -> new Object[]{rs.getString(1), rs.getString(2), rs.getLong(3), rs.getString(4), rs.getInt(5)})
                 .single();
-        assertThat(row[0]).isEqualTo("RECEIVED");
+        // The worker (Phase 2) may already be working on it - this payment is unknown to the merchant,
+        // so it will be retried and eventually dead-lettered. Any of these proves it was stored.
+        assertThat(row[0]).isIn("RECEIVED", "RETRY_SCHEDULED", "DEAD");
+        // ...and the outbox row was committed in the same transaction:
+        assertThat(count("SELECT count(*) FROM outbox_events WHERE purpose = 'INGEST'")).isEqualTo(1);
         assertThat(row[1]).isEqualTo("pay_1");
         assertThat(row[2]).isEqualTo(2L);
         assertThat(row[3]).isEqualTo(body);   // exact bytes kept for audit / re-verification

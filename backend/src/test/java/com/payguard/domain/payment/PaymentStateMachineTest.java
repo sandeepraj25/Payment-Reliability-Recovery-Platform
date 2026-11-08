@@ -85,6 +85,30 @@ class PaymentStateMachineTest {
     }
 
     @Test
+    void reachabilityAllowsSkippingLostIntermediateStates() {
+        // "authorized" webhook lost, "captured" arrives: merchant may jump CREATED -> CAPTURED.
+        assertThat(PaymentStateMachine.isReachable(CREATED, CAPTURED)).isTrue();
+        assertThat(PaymentStateMachine.isReachable(CREATED, REFUNDED)).isTrue();
+        assertThat(PaymentStateMachine.isReachable(AUTHORIZED, PARTIALLY_REFUNDED)).isTrue();
+    }
+
+    @Test
+    void reachabilityRejectsImpossibleMoves() {
+        assertThat(PaymentStateMachine.isReachable(CAPTURED, FAILED)).isFalse();
+        assertThat(PaymentStateMachine.isReachable(CAPTURED, AUTHORIZED)).isFalse();
+        assertThat(PaymentStateMachine.isReachable(FAILED, CAPTURED)).isFalse();
+        assertThat(PaymentStateMachine.isReachable(REFUNDED, PARTIALLY_REFUNDED)).isFalse();
+    }
+
+    @ParameterizedTest(name = "{0} -> {1}")
+    @MethodSource("allPairs")
+    void everyDirectlyLegalStepIsAlsoReachable(PaymentStatus from, PaymentStatus to) {
+        if (PaymentStateMachine.decide(from, to) == APPLY) {
+            assertThat(PaymentStateMachine.isReachable(from, to)).isTrue();
+        }
+    }
+
+    @Test
     void nullIsRejected() {
         assertThatThrownBy(() -> PaymentStateMachine.decide(null, CAPTURED)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> PaymentStateMachine.decide(CREATED, null)).isInstanceOf(IllegalArgumentException.class);

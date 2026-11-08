@@ -57,6 +57,35 @@ public class Order {
         this.updatedAt = now;
     }
 
+    /** Payment captured. Only from PAYMENT_PENDING (or PAYMENT_FAILED: a later attempt succeeded). */
+    public boolean markPaid(Instant now) {
+        if (status == OrderStatus.PAYMENT_PENDING || status == OrderStatus.PAYMENT_FAILED) {
+            status = OrderStatus.PAID;
+            updatedAt = now;
+            return true;
+        }
+        return false;
+    }
+
+    /** Only a PAID order can ship. Callers must have inserted the fulfilments row first (the real guard). */
+    public void markFulfilled(Instant now) {
+        if (status != OrderStatus.PAID) {
+            throw new IllegalStateException("order " + id + " cannot be fulfilled from " + status);
+        }
+        status = OrderStatus.FULFILLED;
+        fulfilledAt = now;
+        updatedAt = now;
+    }
+
+    public boolean markPaymentFailed(Instant now) {
+        if (status == OrderStatus.PAYMENT_PENDING) {
+            status = OrderStatus.PAYMENT_FAILED;
+            updatedAt = now;
+            return true;
+        }
+        return false;
+    }
+
     public UUID getId() { return id; }
     public String getCustomerRef() { return customerRef; }
     public long getAmountMinor() { return amountMinor; }

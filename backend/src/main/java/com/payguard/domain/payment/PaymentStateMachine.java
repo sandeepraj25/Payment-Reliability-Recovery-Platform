@@ -68,6 +68,33 @@ public final class PaymentStateMachine {
         }
     }
 
+    /**
+     * Can {@code to} be reached from {@code from} through one or more legal steps?
+     *
+     * <p>Used by the MERCHANT side, which learns about the gateway's state through webhooks that
+     * can be lost or arrive out of order. Example: "captured" (version 2) arrives but "authorized"
+     * (version 1) never did. CREATED -> CAPTURED is not a single legal step, but it IS reachable
+     * (via AUTHORIZED), so the merchant may jump straight to the newer authoritative state.
+     * CAPTURED -> FAILED is not reachable by any path, so such an event is a real anomaly.
+     */
+    public static boolean isReachable(PaymentStatus from, PaymentStatus to) {
+        if (from == null || to == null) {
+            throw new IllegalArgumentException("status must not be null");
+        }
+        EnumSet<PaymentStatus> seen = EnumSet.noneOf(PaymentStatus.class);
+        java.util.ArrayDeque<PaymentStatus> queue = new java.util.ArrayDeque<>(ALLOWED.get(from));
+        while (!queue.isEmpty()) {        // breadth-first search over a 7-node graph
+            PaymentStatus next = queue.poll();
+            if (next == to) {
+                return true;
+            }
+            if (seen.add(next)) {
+                queue.addAll(ALLOWED.get(next));
+            }
+        }
+        return false;
+    }
+
     public static Set<PaymentStatus> allowedFrom(PaymentStatus from) {
         return Collections.unmodifiableSet(ALLOWED.get(from));
     }

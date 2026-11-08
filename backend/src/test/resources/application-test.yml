@@ -14,6 +14,16 @@ payguard:
         secrets:
           - test-webhook-secret-0123456789
         tolerance: PT5M
+  outbox:
+    poll-interval-ms: 100
+    confirm-timeout: PT3S
+  worker:
+    concurrency: "4"
+    max-attempts: 3
+    base-delay: PT0.2S
+    max-delay: PT1S
+  faults:
+    enabled: true
   idempotency:
     lease: PT30S
     ttl: P1D
@@ -22,3 +32,10 @@ server:
   tomcat:
     threads:
       max: 200
+
+spring:
+  datasource:
+    hikari:
+      connection-timeout: 3000     # outage tests must fail fast, not wait 30 s
+      data-source-properties:
+        socketTimeout: 10

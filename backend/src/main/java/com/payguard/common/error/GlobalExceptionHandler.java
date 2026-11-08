@@ -69,6 +69,20 @@ public class GlobalExceptionHandler {
                 .body(ApiError.of("MALFORMED_REQUEST", "Request body is not valid JSON for this endpoint"));
     }
 
+    /**
+     * Database (or similar) temporarily unavailable. 503 tells callers - including the payment gateway
+     * delivering a webhook - "nothing was stored, try again later".
+     */
+    @ExceptionHandler({org.springframework.dao.TransientDataAccessException.class,
+            org.springframework.dao.DataAccessResourceFailureException.class,
+            org.springframework.transaction.CannotCreateTransactionException.class})
+    ResponseEntity<ApiError> handleUnavailable(Exception e) {
+        log.warn("dependency unavailable: {}", e.toString());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "5")
+                .body(ApiError.of("TEMPORARILY_UNAVAILABLE", "Temporarily unavailable, retry later"));
+    }
+
     /** e.g. "abc" for a UUID or long path variable. */
     @ExceptionHandler(TypeMismatchException.class)
     ResponseEntity<ApiError> handleTypeMismatch(TypeMismatchException e) {

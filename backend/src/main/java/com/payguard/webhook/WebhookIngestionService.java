@@ -2,6 +2,9 @@ package com.payguard.webhook;
 
 import com.payguard.common.crypto.Hashing;
 import com.payguard.common.error.ApiException;
+import com.payguard.faults.FaultInjector;
+import com.payguard.faults.FaultPoint;
+import com.payguard.outbox.OutboxStore;
 import com.payguard.webhook.signature.WebhookSignature;
 import com.payguard.webhook.verification.WebhookVerifier;
 import org.slf4j.Logger;
@@ -13,6 +16,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -32,7 +36,7 @@ import java.util.stream.Collectors;
  * </pre>
  *
  * The 200 is returned only after COMMIT, so "acknowledged" always means "durably stored".
- * Phase 2 adds the outbox row to that SAME transaction.
+ * The outbox row is written in that SAME transaction (Module D).
  */
 @Service
 public class WebhookIngestionService {
@@ -46,10 +50,14 @@ public class WebhookIngestionService {
     private final WebhookProperties props;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final OutboxStore outbox;
+    private final FaultInjector faults;
 
     public WebhookIngestionService(List<WebhookVerifier> verifiers, WebhookPayloadParser parser,
                                    WebhookEventStore store, WebhookProperties props,
-                                   TransactionTemplate tx, Clock clock) {
+                                   TransactionTemplate tx, Clock clock, OutboxStore outbox, FaultInjector faults) {
+        this.outbox = outbox;
+        this.faults = faults;
         this.verifiers = verifiers.stream().collect(Collectors.toUnmodifiableMap(WebhookVerifier::provider, Function.identity()));
         this.parser = parser;
         this.store = store;
@@ -115,8 +123,21 @@ public class WebhookIngestionService {
 
         // 3) DURABLE STORE + DEDUP, in a transaction that has COMMITTED when execute() returns.
         String sha = Hashing.sha256Hex(rawBody);
-        WebhookEventStore.InsertResult stored = tx.execute(status ->
-                store.insertOrMarkDuplicate(provider, event, sha, clock.instant()));
+        // Transactional outbox: the event row and its "please process me" row commit TOGETHER.
+        // There is no moment where the event is stored but nobody will ever process it.
+        // Fault check happens BEFORE the transaction: it uses its own connection, and taking a second
+        // connection while holding one can starve the pool under load (all threads waiting for an 11th).
+        if (faults.shouldFire(FaultPoint.INGESTION_DB_UNAVAILABLE)) {
+            throw new org.springframework.dao.DataAccessResourceFailureException("simulated: database unavailable");
+        }
+        WebhookEventStore.InsertResult stored = tx.execute(status -> {
+            Instant now = clock.instant();
+            WebhookEventStore.InsertResult r = store.insertOrMarkDuplicate(provider, event, sha, now);
+            if (!r.duplicate() && event.known()) {
+                outbox.insert(r.id(), OutboxStore.Purpose.INGEST, event.eventId(), event.type(), event.paymentId(), now);
+            }
+            return r;
+        });
 
         if (stored.duplicate()) {
             if (!sha.equals(stored.existingPayloadSha256())) {

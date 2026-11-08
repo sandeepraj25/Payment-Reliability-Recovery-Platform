@@ -45,6 +45,10 @@ public class Payment {
     @Column(nullable = false)
     private PaymentStatus status;
 
+    /** Newest gateway payment version applied here. Events with version <= this are stale. */
+    @Column(name = "gateway_version", nullable = false)
+    private long gatewayVersion;
+
     @Version
     @Column(nullable = false)
     private Long version;
@@ -79,6 +83,22 @@ public class Payment {
         this.updatedAt = now;
     }
 
+    /**
+     * Copies the gateway's authoritative state (from a verified webhook or a reconciliation lookup).
+     * The caller has already checked that {@code gatewayVersion} is newer and that {@code status} is
+     * reachable from the current status; this method re-checks the version as a last guard.
+     */
+    public void applyGatewayState(PaymentStatus status, long amountRefundedMinor, long gatewayVersion, Instant now) {
+        if (gatewayVersion <= this.gatewayVersion) {
+            throw new IllegalStateException("stale gateway version " + gatewayVersion + " <= " + this.gatewayVersion);
+        }
+        this.status = status;
+        this.amountRefundedMinor = amountRefundedMinor;
+        this.gatewayVersion = gatewayVersion;
+        this.updatedAt = now;
+    }
+
+    public long getGatewayVersion() { return gatewayVersion; }
     public UUID getId() { return id; }
     public UUID getOrderId() { return orderId; }
     public String getProvider() { return provider; }

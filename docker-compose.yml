@@ -1,5 +1,10 @@
-# Local/demo stack. Usage:  cp .env.example .env  (edit values)  &&  docker compose up --build
-# Phase 2 adds RabbitMQ here; Phase 4 adds the frontend.
+# Local/demo stack.   cp .env.example .env   (edit values)   &&   docker compose up --build
+#
+#   postgres   source of truth
+#   rabbitmq   durable queues + DLQ (management UI on http://localhost:15672)
+#   backend    HTTP API + webhook ingestion + outbox publisher + gateway simulator   (worker OFF)
+#   worker     the SAME jar started as a separate background process                 (no HTTP, worker ON)
+#   frontend   operations dashboard (http://localhost:5173)
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,7 +13,7 @@ services:
       POSTGRES_USER: ${PAYGUARD_DB_USER}
       POSTGRES_PASSWORD: ${PAYGUARD_DB_PASSWORD}
     ports:
-      - "127.0.0.1:5432:5432"   # bound to localhost only
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,16 +22,60 @@ services:
       timeout: 3s
       retries: 20
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${PAYGUARD_RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${PAYGUARD_RABBIT_PASSWORD}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   backend:
     build: ./backend
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     env_file: .env
     environment:
       PAYGUARD_DB_URL: jdbc:postgresql://postgres:5432/payguard
+      PAYGUARD_RABBIT_HOST: rabbitmq
+      PAYGUARD_WORKER_ENABLED: "false"
     ports:
       - "127.0.0.1:8080:8080"
 
+  worker:
+    build: ./backend
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      backend: { condition: service_started }   # backend runs the Flyway migrations first
+    env_file: .env
+    environment:
+      PAYGUARD_DB_URL: jdbc:postgresql://postgres:5432/payguard
+      PAYGUARD_RABBIT_HOST: rabbitmq
+      PAYGUARD_WORKER_ENABLED: "true"
+      PAYGUARD_OUTBOX_PUBLISHER_ENABLED: "false"
+      PAYGUARD_SIMULATOR_ENABLED: "false"
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      SPRING_FLYWAY_ENABLED: "false"
+    deploy:
+      replicas: 2                               # two worker processes compete on one queue
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:5173:80"
+
 volumes:
   pgdata:
+  rabbitdata:

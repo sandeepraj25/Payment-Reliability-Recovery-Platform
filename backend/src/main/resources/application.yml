@@ -13,6 +13,8 @@ spring:
     hikari:
       maximum-pool-size: ${PAYGUARD_DB_POOL_SIZE:10}
       connection-timeout: 30000
+      data-source-properties:
+        socketTimeout: 30          # seconds; without it a query on a dead TCP connection can hang forever
   jpa:
     open-in-view: false            # no lazy loading during JSON rendering; transactions end in the service layer
     hibernate:
@@ -22,6 +24,20 @@ spring:
   flyway:
     enabled: true
     schemas: public,gateway
+  rabbitmq:
+    host: ${PAYGUARD_RABBIT_HOST:localhost}
+    port: ${PAYGUARD_RABBIT_PORT:5672}
+    username: ${PAYGUARD_RABBIT_USER:payguard}
+    password: ${PAYGUARD_RABBIT_PASSWORD}
+    publisher-confirm-type: simple      # outbox publisher blocks on waitForConfirmsOrDie
+    publisher-returns: true
+    template:
+      mandatory: true                   # unroutable messages come back instead of disappearing
+    listener:
+      simple:
+        acknowledge-mode: manual        # we ack only after the DB transaction committed
+        prefetch: 10
+        default-requeue-rejected: false
   jackson:
     deserialization:
       accept-float-as-int: false        # 4999.5 for a Long amount is a 400, never silently truncated
@@ -71,6 +87,25 @@ payguard:
         secrets:
           - ${PAYGUARD_WEBHOOK_SECRET}
         tolerance: PT5M
+
+  # Transactional outbox publisher (Module D). Disable in a worker-only process if you want one publisher.
+  outbox:
+    publisher-enabled: ${PAYGUARD_OUTBOX_PUBLISHER_ENABLED:true}
+    poll-interval-ms: 500
+    batch-size: 50
+    confirm-timeout: PT5S
+
+  # Event worker (Module E/F). Same jar; docker-compose runs it as a separate process.
+  worker:
+    enabled: ${PAYGUARD_WORKER_ENABLED:true}
+    concurrency: "2-4"
+    max-attempts: 5
+    base-delay: PT1S
+    max-delay: PT1M
+
+  # Failure injection (Module H). NEVER enable outside local/demo.
+  faults:
+    enabled: ${PAYGUARD_FAULTS_ENABLED:false}
 
   idempotency:
     lease: PT30S

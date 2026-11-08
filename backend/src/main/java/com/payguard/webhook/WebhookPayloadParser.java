@@ -45,7 +45,8 @@ public class WebhookPayloadParser {
     /** The validated, typed view of one event. {@code paymentId} etc. are null for unknown types. */
     public record ParsedEvent(String eventId, String type, boolean known, Instant createdAt,
                               String rawBodyText, String paymentId, Long paymentVersion,
-                              Long amountMinor, String currency, PaymentStatus paymentStatus) {
+                              Long amountMinor, String currency, PaymentStatus paymentStatus,
+                              Long amountRefundedMinor) {
     }
 
     public static class MalformedPayloadException extends RuntimeException {
@@ -77,7 +78,7 @@ public class WebhookPayloadParser {
         Instant createdAt = optionalInstant(root, "created_at");
 
         if (!KNOWN_TYPES.contains(type)) {
-            return new ParsedEvent(eventId, type, false, createdAt, text, null, null, null, null, null);
+            return new ParsedEvent(eventId, type, false, createdAt, text, null, null, null, null, null, null);
         }
 
         JsonNode payment = root.path("data").path("payment");
@@ -97,7 +98,11 @@ public class WebhookPayloadParser {
         } catch (IllegalArgumentException e) {
             throw new MalformedPayloadException("data.payment.status is not a known payment status");
         }
-        return new ParsedEvent(eventId, type, true, createdAt, text, paymentId, version, amount, currency, status);
+        long refunded = payment.has("amount_refunded_minor") ? requiredNonNegativeLong(payment, "amount_refunded_minor") : 0L;
+        if (refunded > amount) {
+            throw new MalformedPayloadException("data.payment.amount_refunded_minor exceeds amount_minor");
+        }
+        return new ParsedEvent(eventId, type, true, createdAt, text, paymentId, version, amount, currency, status, refunded);
     }
 
     // ------------------------------------------------------------------ helpers
